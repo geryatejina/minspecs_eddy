@@ -26,6 +26,7 @@ from datetime import datetime
 
 
 DEFAULT_DATA_ROOT = Path(os.getenv("ICOS_DATA_ROOT", r"D:\data\ec\raw\ICOS"))
+DEFAULT_CACHE_ROOT = Path(os.getenv("ICOS_NPY_ROOT", r"D:\data\ec\raw\ICOS_npy"))
 
 # Variables needed for simulation
 SELECT_COLUMNS = [
@@ -104,18 +105,49 @@ def iter_site_files(
 
 def read_raw_file(file_path: Path) -> pd.DataFrame:
     """
-    Load ICOS Level-0 CSV file.
+    Load ICOS Level-0 CSV file, skipping timestamp parsing (unused downstream).
     """
-    df = pd.read_csv(file_path, low_memory=False)
-
-    ts_col = df.columns[0]
-    df[ts_col] = pd.to_datetime(df[ts_col].astype(str), format="%Y%m%d%H%M%S.%f")
-    df = df.set_index(ts_col)
-    df.index.name = "TIMESTAMP"
+    # Only pull needed measurement columns; timestamp column is ignored.
+    df = pd.read_csv(
+        file_path,
+        usecols=lambda c: c in SELECT_COLUMNS,
+        low_memory=False,
+    )
 
     # select only available needed columns
     cols = [c for c in SELECT_COLUMNS if c in df.columns]
     return df[cols]
+
+
+def cache_csv_to_npz(csv_path: Path, raw_root: Path = DEFAULT_DATA_ROOT, cache_root: Path = DEFAULT_CACHE_ROOT, overwrite: bool = False) -> Path:
+    """
+    Convert one CSV window to NPZ in the mirrored cache root.
+    """
+    rel = csv_path.relative_to(raw_root)
+    target_path = (cache_root / rel).with_suffix(".npz")
+
+    if target_path.exists() and not overwrite:
+        return target_path
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    df = read_raw_file(csv_path)
+    df = add_mixing_ratios(df)
+    arrays = df_to_arrays(df)
+    np.savez(target_path, **arrays)
+    return target_path
+
+
+def load_window_arrays(path: Path):
+    """
+    Load window arrays from NPZ if present, otherwise parse CSV.
+    """
+    if path.suffix.lower() == ".npz":
+        data = np.load(path)
+        return {k: data[k] for k in data.files}
+
+    df = read_raw_file(path)
+    df = add_mixing_ratios(df)
+    return df_to_arrays(df)
 
 
 #=====================================================================

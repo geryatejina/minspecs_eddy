@@ -1,7 +1,7 @@
 import numpy as np
 from .types import Theta
 
-def sample_thetas(N: int, ranges: dict):
+def sample_thetas(N: int, ranges: dict, seed: int | None = None):
     """
     Sobol-like pseudo-random sampler (simple uniform sampler).
     ranges = dict(name → (low, high))
@@ -9,7 +9,7 @@ def sample_thetas(N: int, ranges: dict):
     names = list(ranges.keys())
     dim = len(names)
 
-    rnd = np.random.default_rng()
+    rnd = np.random.default_rng(seed)
     M = rnd.random((N, dim))
 
     thetas = []

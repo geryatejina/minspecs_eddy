@@ -23,9 +23,7 @@ from typing import List, Dict, Tuple, Optional
 
 from .io_icos import (
     iter_site_files,
-    read_raw_file,
-    add_mixing_ratios,
-    df_to_arrays,
+    load_window_arrays,
 )
 from .window_processor import process_single_window
 from .results import aggregate_window_results
@@ -41,9 +39,7 @@ def _process_file_all(
     Worker helper: read one raw file, then compute window results for all
     (theta, D) combinations. Returns a list of window_result dicts.
     """
-    df = read_raw_file(path)
-    df = add_mixing_ratios(df)
-    arrays = df_to_arrays(df)
+    arrays = load_window_arrays(path)
 
     results = []
     for theta_index, theta in enumerate(theta_list):
@@ -66,7 +62,9 @@ def run_site(
     D_values: List[int],
     data_root: Path,
     max_workers: int | None = None,
+    file_pattern: str = "*.npz",
     max_files: Optional[int] = None,
+    skip_pairs: Optional[set[tuple[int, int]]] = None,
 ) -> Dict[Tuple[int, int], Dict]:
     """
     Run simulation for one site.
@@ -102,7 +100,7 @@ def run_site(
         site=site_id,
         ecosystem=ecosystem,
         data_root=data_root,
-        pattern="*.csv",
+        pattern=file_pattern,
         max_files=max_files,
     ))
 
@@ -124,6 +122,8 @@ def run_site(
 
     # Aggregate per (theta, D)
     for (theta_index, D), window_results in window_results_by_combo.items():
+        if skip_pairs and (theta_index, D) in skip_pairs:
+            continue
         if not window_results:
             continue
 

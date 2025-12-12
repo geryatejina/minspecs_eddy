@@ -20,18 +20,15 @@ Output:
 import pandas as pd
 
 
-def write_results_to_csv(experiment_results, out_path):
+def results_to_dataframe(experiment_results):
     """
-    Flatten experiment_results into a single DataFrame and write to CSV.
+    Flatten experiment_results into a single DataFrame.
 
     Parameters
     ----------
     experiment_results : dict
         Results produced by run_experiment().
-    out_path : str or Path
-        Output path for the CSV file.
     """
-
     rows = []
 
     for (ecosystem, site), site_dict in experiment_results.items():
@@ -51,9 +48,14 @@ def write_results_to_csv(experiment_results, out_path):
     df = pd.DataFrame(rows)
 
     # Sort output for readability
-    df = df.sort_values(["ecosystem", "site", "theta_index", "D"])
+    return df.sort_values(["ecosystem", "site", "theta_index", "D"])
 
+
+def write_results_to_csv(experiment_results, out_path):
+    """
+    Flatten experiment_results into a single DataFrame and write to CSV.
+    """
+    df = results_to_dataframe(experiment_results)
     df.to_csv(out_path, index=False)
     print(f"[writer] Results saved to {out_path}")
-
     return df

@@ -25,6 +25,9 @@ def run_experiment(
     data_root: Path = None,
     max_workers: int | None = None,
     max_files_per_site: int | None = None,
+    file_pattern: str = "*.npz",
+    theta_seed: int | None = None,
+    skip_map: dict | None = None,
 ):    
     """
     Run the entire experiment across all sites.
@@ -45,6 +48,12 @@ def run_experiment(
         number of processes for file-level parallelism
     max_files_per_site : int or None
         optional cap on number of 30-min windows per site (for test runs)
+    file_pattern : str
+        glob pattern for window files (e.g., '*.npz' for cached arrays)
+    theta_seed : int or None
+        RNG seed for theta sampling (for reproducibility/resume)
+    skip_map : dict or None
+        optional mapping {(ecosystem, site): set((theta_index, D))} to skip already processed combos
 
     Returns
     -------
@@ -70,7 +79,7 @@ def run_experiment(
 
     # --- sample θ values ---
     print(f"[main] Sampling {N_theta} theta values...")
-    theta_list = sample_thetas(N_theta, theta_ranges)
+    theta_list = sample_thetas(N_theta, theta_ranges, seed=theta_seed)
 
     experiment_results = {}
 
@@ -86,6 +95,8 @@ def run_experiment(
             data_root=data_root,
             max_workers=max_workers,
             max_files=max_files_per_site,
+            file_pattern=file_pattern,
+            skip_pairs=(skip_map or {}).get((ecosystem, site)),
         )
 
         experiment_results[(ecosystem, site)] = site_results
