@@ -13,7 +13,7 @@ from minspecs_simulation.io_icos import cache_csv_to_npz, DEFAULT_DATA_ROOT, DEF
 SKIP_SITE = Path('igbp_EBF/FR-Pue')
 
 
-def main(raw_root: Path, cache_root: Path, overwrite: bool = False, report_every: int = 500):
+def main(raw_root: Path, cache_root: Path, overwrite: bool = False, report_every: int = 500, include_fr_pue: bool = False):
     total = converted = skipped = failed = 0
 
     # Discover sites up front for progress context
@@ -24,7 +24,7 @@ def main(raw_root: Path, cache_root: Path, overwrite: bool = False, report_every
     site_count = len(sites)
 
     for idx, (eco, site, site_dir) in enumerate(sites, 1):
-        if (eco, site) == tuple(SKIP_SITE.parts):
+        if (not include_fr_pue) and (eco, site) == tuple(SKIP_SITE.parts):
             print(f"[skip-site] {eco}/{site} ({idx}/{site_count})")
             continue
 
@@ -54,6 +54,13 @@ if __name__ == '__main__':
     parser.add_argument('--cache-root', type=Path, default=DEFAULT_CACHE_ROOT, help='Output cache root for NPZ files')
     parser.add_argument('--overwrite', action='store_true', help='Rewrite existing NPZ files')
     parser.add_argument('--report-every', type=int, default=500, help='Progress report interval (files)')
+    parser.add_argument('--include-fr-pue', action='store_true', help='Process FR-Pue (otherwise skipped)')
     args = parser.parse_args()
 
-    main(raw_root=args.raw_root, cache_root=args.cache_root, overwrite=args.overwrite, report_every=args.report_every)
+    main(
+        raw_root=args.raw_root,
+        cache_root=args.cache_root,
+        overwrite=args.overwrite,
+        report_every=args.report_every,
+        include_fr_pue=args.include_fr_pue,
+    )

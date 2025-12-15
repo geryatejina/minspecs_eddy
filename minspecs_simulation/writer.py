@@ -47,6 +47,9 @@ def results_to_dataframe(experiment_results):
 
     df = pd.DataFrame(rows)
 
+    if df.empty:
+        return df
+
     # Sort output for readability
     return df.sort_values(["ecosystem", "site", "theta_index", "D"])
 

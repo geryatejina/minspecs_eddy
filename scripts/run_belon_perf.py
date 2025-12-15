@@ -1,15 +1,10 @@
 from pathlib import Path
-import pandas as pd
 from minspecs_simulation.main import run_experiment
-from minspecs_simulation.writer import write_results_to_csv, results_to_dataframe
+from minspecs_simulation.writer import write_results_to_csv
+
 
 if __name__ == "__main__":
-
-    sites = [
-        ("igbp_ENF", "CH-Dav"),
-        ("igbp_GRA", "BE-Dor"),
-        ("igbp_WET", "FI-Sii"),
-    ]
+    sites = [("igbp_CRO", "BE-Lon")]
 
     theta_ranges = {
         "fs_sonic": (5, 20),
@@ -34,9 +29,8 @@ if __name__ == "__main__":
         data_root=Path(r"D:\data\ec\raw\ICOS_npz"),
         file_pattern="*.npz",
         max_workers=8,
-        max_files_per_site=336,  # first week (7 days * 48 half-hour windows)
-        theta_seed=42,  # deterministic theta sampling for resume
-        skip_map=None,
+        max_files_per_site=None,
+        theta_seed=42,
     )
 
-    write_results_to_csv(results, "results.csv")
+    write_results_to_csv(results, "results_belon.csv")
