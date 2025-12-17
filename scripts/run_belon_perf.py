@@ -25,7 +25,7 @@ if __name__ == "__main__":
         ecosystem_site_list=sites,
         theta_ranges=theta_ranges,
         N_theta=10,
-        D_values=[1, 2, 3, 5, 10],
+        rotation_modes=("double", "none"),
         data_root=Path(r"D:\data\ec\raw\ICOS_npz"),
         file_pattern="*.npz",
         max_workers=8,

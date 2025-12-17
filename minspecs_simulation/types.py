@@ -20,7 +20,6 @@ class Theta:
 class WindowMetrics:
     site_id: str
     theta_index: int
-    D: int
 
     F_CO2_ref: float
     F_CO2_deg: float

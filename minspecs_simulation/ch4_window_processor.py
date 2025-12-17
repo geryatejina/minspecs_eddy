@@ -48,7 +48,6 @@ def process_ch4_window(
         return {
             "site_id": site_id,
             "theta_index": theta_index,
-            "D": 1,
             "window_start": window_start,
             "F_CH4_ref": np.nan,
             "F_CH4_deg": np.nan,
@@ -93,7 +92,6 @@ def process_ch4_window(
     return {
         "site_id": site_id,
         "theta_index": theta_index,
-        "D": 1,  # placeholder to stay compatible with writer/aggregator
         "window_start": window_start,
         "F_CH4_ref": F_CH4_ref,
         "F_CH4_deg": F_CH4_deg,

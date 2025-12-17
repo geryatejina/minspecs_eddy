@@ -3,9 +3,9 @@ results.py
 ----------
 
 Aggregates window-level QC + flux metrics into a single summary
-record for (site, θ, D).
+record for (site, theta).
 
-Input: list of dictionaries, each from process_window_for_theta_D()
+Input: list of dictionaries, each from process_window_for_theta()
 Output: one dictionary with aggregated metrics
 """
 
@@ -36,7 +36,7 @@ def aggregate_window_results(window_results: List[Dict]) -> Dict:
     return a single aggregated record.
 
     Each window_result dict contains:
-        site_id, theta_index, D,
+        site_id, theta_index,
         F_CO2_ref, F_CO2_deg, bias_CO2, ...
         + 20+ QC metrics
 
@@ -54,15 +54,15 @@ def aggregate_window_results(window_results: List[Dict]) -> Dict:
     # Metadata fields (same for all windows)
     site_id = window_results[0]["site_id"]
     theta_index = window_results[0]["theta_index"]
-    D = window_results[0]["D"]
-
+    rotation_mode = window_results[0].get("rotation_mode")
     # Accumulation structure
     agg = {
         "site_id": site_id,
         "theta_index": theta_index,
-        "D": D,
         "n_windows": len(window_results),
     }
+    if rotation_mode is not None:
+        agg["rotation_mode"] = rotation_mode
 
     # Collect lists per metric
     metric_lists = {key: [] for key in numeric_keys}

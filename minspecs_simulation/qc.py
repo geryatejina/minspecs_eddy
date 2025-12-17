@@ -24,19 +24,60 @@ from .window_processor import detrend, covariance
 # --------------------------------------------------------------
 
 def safe_var(x):
-    return float(np.nanvar(detrend(x)))
+    x = np.asarray(x, dtype=float)
+    mask = np.isfinite(x)
+    n = mask.sum()
+    if n < 2:
+        return np.nan
+    xm = x[mask] - x[mask].mean()
+    return float(np.mean(xm * xm))
 
 
 def safe_cov(w, x):
-    return float(np.nanmean(detrend(w) * detrend(x)))
+    w = np.asarray(w, dtype=float)
+    x = np.asarray(x, dtype=float)
+    mask = np.isfinite(w) & np.isfinite(x)
+    n = mask.sum()
+    if n == 0:
+        return np.nan
+    w_c = w[mask] - w[mask].mean()
+    x_c = x[mask] - x[mask].mean()
+    return float(np.mean(w_c * x_c))
 
 
 def safe_mean(x):
-    return float(np.nanmean(x))
+    x = np.asarray(x, dtype=float)
+    mask = np.isfinite(x)
+    if not mask.any():
+        return np.nan
+    return float(x[mask].mean())
 
 
 def fraction_nan(x):
     return float(np.isnan(x).sum() / len(x))
+
+
+def nan_mean_abs_diff(a, b):
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    mask = np.isfinite(a) & np.isfinite(b)
+    if not mask.any():
+        return np.nan
+    return float(np.mean(np.abs(a[mask] - b[mask])))
+
+
+def nan_rmse(a, b):
+    """
+    RMSE ignoring NaNs (useful because fractional_delay() injects NaNs at edges).
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    mask = np.isfinite(a) & np.isfinite(b)
+    if not mask.any():
+        return np.nan
+    diff = a[mask] - b[mask]
+    mse = np.mean(diff * diff)
+    return float(np.sqrt(mse))
 
 
 # --------------------------------------------------------------
@@ -110,8 +151,6 @@ def compute_qc_metrics(
             "sign_flip_LE": np.nan,
             "sign_flip_H": np.nan,
             "frac_nan_deg": np.nan,
-            "hf_ratio_CO2": np.nan,
-            "hf_ratio_w": np.nan,
         }
 
     w_ref = w_ref[:min_len]
@@ -173,16 +212,16 @@ def compute_qc_metrics(
     rel_bias_H   = bias_H   / abs(F_H_ref)   if F_H_ref   != 0 else np.nan
 
     # RMSE
-    rmse_CO2 = np.sqrt((mrCO2_deg - mrCO2_ref)**2).mean()
-    rmse_H2O = np.sqrt((mrH2O_deg - mrH2O_ref)**2).mean()
-    rmse_T   = np.sqrt((Ts_deg    - Ts_ref)**2).mean()
-    rmse_w   = np.sqrt((w_deg     - w_ref)**2).mean()
+    rmse_CO2 = nan_rmse(mrCO2_deg, mrCO2_ref)
+    rmse_H2O = nan_rmse(mrH2O_deg, mrH2O_ref)
+    rmse_T   = nan_rmse(Ts_deg,    Ts_ref)
+    rmse_w   = nan_rmse(w_deg,     w_ref)
 
     # MAD
-    mad_CO2 = np.nanmean(np.abs(mrCO2_deg - mrCO2_ref))
-    mad_H2O = np.nanmean(np.abs(mrH2O_deg - mrH2O_ref))
-    mad_T   = np.nanmean(np.abs(Ts_deg    - Ts_ref))
-    mad_w   = np.nanmean(np.abs(w_deg     - w_ref))
+    mad_CO2 = nan_mean_abs_diff(mrCO2_deg, mrCO2_ref)
+    mad_H2O = nan_mean_abs_diff(mrH2O_deg, mrH2O_ref)
+    mad_T   = nan_mean_abs_diff(Ts_deg,    Ts_ref)
+    mad_w   = nan_mean_abs_diff(w_deg,     w_ref)
 
     # ---------------------------------------------
     # Sign-change indicator
@@ -232,8 +271,4 @@ def compute_qc_metrics(
         sign_flip_H    = sign_flip_H,
 
         frac_nan_deg   = frac_nan_deg,
-
-        # High-frequency energy proxy disabled (FFT-heavy); keep keys as NaN
-        hf_ratio_CO2   = np.nan,
-        hf_ratio_w     = np.nan,
     )

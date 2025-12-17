@@ -73,10 +73,10 @@ def run_ch4_site(
     max_files: Optional[int] = None,
     max_workers: Optional[int] = None,
     f_raw: float = 20.0,
-) -> Dict[Tuple[int, int], Dict]:
+) -> Dict[int, Dict]:
     """
     Run methane simulation for one site. Returns structure compatible with
-    writer/results: keys are (theta_index, D) where D is fixed to 1.
+    writer/results: keys are theta_index.
     """
     file_paths = list(iter_ch4_files(
         site=site_id,
@@ -96,7 +96,7 @@ def run_ch4_site(
             for res in f.result():
                 window_results_by_theta[res["theta_index"]].append(res)
 
-    aggregated: Dict[Tuple[int, int], Dict] = {}
+    aggregated: Dict[int, Dict] = {}
     for theta_index, window_results in window_results_by_theta.items():
         if not window_results:
             continue
@@ -109,9 +109,8 @@ def run_ch4_site(
         agg["sweep_value"] = sweep_value
         agg["site_id"] = site_id
         agg["theta_index"] = theta_index
-        agg["D"] = 1
 
-        aggregated[(theta_index, 1)] = agg
+        aggregated[theta_index] = agg
 
     return aggregated
 
@@ -132,7 +131,7 @@ def run_ch4_experiment(
 
     Returns
     -------
-    dict: {(ecosystem_label, site): {(theta_index, 1): aggregated_metrics}}
+    dict: {(ecosystem_label, site): {theta_index: aggregated_metrics}}
     """
     theta_plan = build_theta_plan(baseline_theta, sweep_map)
 

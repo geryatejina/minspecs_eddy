@@ -5,7 +5,7 @@ main.py
 High-level orchestration of the minspecs_eddy simulation.
 
 - Loops over sites
-- Samples θ values
+- Samples theta values
 - Calls run_site() for each site
 - Returns a nested dict keyed by (ecosystem, site)
 """
@@ -21,7 +21,7 @@ def run_experiment(
     ecosystem_site_list=None,
     theta_ranges: dict = None,
     N_theta: int = 10,
-    D_values=None,
+    rotation_modes: list[str] | tuple[str, ...] = ("double", "none"),
     data_root: Path = None,
     max_workers: int | None = None,
     max_files_per_site: int | None = None,
@@ -39,9 +39,9 @@ def run_experiment(
     theta_ranges : dict
         dict of parameter ranges, e.g. {"fs_sonic": (5,20), ...}
     N_theta : int
-        number of θ samples to generate
-    D_values : list[int]
-        decimation values
+        number of theta samples to generate
+    rotation_modes : list[str] or tuple[str, ...]
+        Discrete processing modes (e.g., ["double", "none"] for rotated vs non-rotated with correction)
     data_root : Path
         ICOS root directory containing ecosystem/site folders
     max_workers : int or None
@@ -53,13 +53,13 @@ def run_experiment(
     theta_seed : int or None
         RNG seed for theta sampling (for reproducibility/resume)
     skip_map : dict or None
-        optional mapping {(ecosystem, site): set((theta_index, D))} to skip already processed combos
+        optional mapping {(ecosystem, site): set(theta_index)} to skip already processed combos
 
     Returns
     -------
     dict : {
         (ecosystem, site): {
-            (theta_index, D): aggregated_metrics_dict,
+            theta_index: aggregated_metrics_dict,
             ...
         }
     }
@@ -77,11 +77,12 @@ def run_experiment(
             print(f"   - {eco}/{site}")
 
 
-    # --- sample θ values ---
+    # --- sample theta values ---
     print(f"[main] Sampling {N_theta} theta values...")
     theta_list = sample_thetas(N_theta, theta_ranges, seed=theta_seed)
 
     experiment_results = {}
+    rotation_modes = list(rotation_modes)
 
     # --- loop over sites ---
     for ecosystem, site in ecosystem_site_list:
@@ -91,12 +92,12 @@ def run_experiment(
             site_id=site,
             ecosystem=ecosystem,
             theta_list=theta_list,
-            D_values=D_values,
+            rotation_modes=rotation_modes,
             data_root=data_root,
             max_workers=max_workers,
             max_files=max_files_per_site,
             file_pattern=file_pattern,
-            skip_pairs=(skip_map or {}).get((ecosystem, site)),
+            skip_set=(skip_map or {}).get((ecosystem, site)),
         )
 
         experiment_results[(ecosystem, site)] = site_results

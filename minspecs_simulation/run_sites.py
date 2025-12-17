@@ -28,7 +28,6 @@ if __name__ == "__main__":
         sites=sites,
         theta_ranges=ranges,
         N_theta=50,
-        D_values=[1, 2, 3, 5, 10],
     )
 
     print("DONE:", results)
