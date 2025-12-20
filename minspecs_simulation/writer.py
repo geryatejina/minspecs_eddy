@@ -57,7 +57,16 @@ def results_to_dataframe(experiment_results):
 
     # Reorder columns: metadata -> theta params -> everything else
     theta_fields = [f.name for f in dataclasses.fields(Theta)]
-    meta_cols = [c for c in ["ecosystem", "site", "theta_index", "rotation_mode", "n_windows"] if c in df.columns]
+    meta_cols = [c for c in [
+        "ecosystem",
+        "site",
+        "theta_index",
+        "subsample_index",
+        "subsample_label",
+        "subsample_mode",
+        "rotation_mode",
+        "n_windows",
+    ] if c in df.columns]
     theta_cols = [c for c in theta_fields if c in df.columns]
     remaining = [c for c in df.columns if c not in meta_cols + theta_cols]
 

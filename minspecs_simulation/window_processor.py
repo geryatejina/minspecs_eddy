@@ -19,7 +19,7 @@ from math import hypot
 
 import numpy as np
 
-from .types import Theta
+from .types import Theta, SubsampleMode, SubsampleSpec
 from .fracdelay import fractional_delay
 from .io_icos import extract_window_timestamp_from_filename
 from .site_meta import get_lat_lon
@@ -41,6 +41,8 @@ if _nb is not None:
         return y
 else:
     _lowpass_first_order_numba = None
+
+BASE_RAW_FS = 20.0  # ICOS raw sampling frequency (Hz)
 
 
 # =============================================================
@@ -205,6 +207,175 @@ def is_daytime(ts, ecosystem: str, site: str) -> bool:
 
 
 # =============================================================
+# Subsampling strategies (applied before any processing)
+# =============================================================
+
+def _apply_mask(arrays, mask):
+    mask = np.asarray(mask, dtype=bool)
+    if mask.size == 0:
+        return {k: v for k, v in arrays.items()}, 0.0
+    if not mask.any():
+        mask = mask.copy()
+        mask[0] = True  # keep at least one sample to avoid empty outputs
+    kept_fraction = float(mask.sum()) / float(mask.size)
+    return {k: v[mask] for k, v in arrays.items()}, kept_fraction
+
+
+def _cumulative_covariance_series(w, x):
+    if len(w) == 0:
+        return np.array([])
+    w = np.asarray(w, dtype=float)
+    x = np.asarray(x, dtype=float)
+    n = np.arange(1, len(w) + 1, dtype=float)
+    wx_cum = np.cumsum(w * x)
+    w_cum = np.cumsum(w)
+    x_cum = np.cumsum(x)
+    return wx_cum / n - (w_cum / n) * (x_cum / n)
+
+
+def _detect_ogive_stop_index(arrays, base_fs, threshold, trailing_sec, min_dwell_sec):
+    w = arrays["w"]
+    if len(w) == 0:
+        return None
+
+    candidates = [
+        arrays.get("rho_CO2"),
+        arrays.get("rho_H2O"),
+        arrays.get("Ts"),
+    ]
+    cov_series = [_cumulative_covariance_series(w, c) for c in candidates if c is not None]
+
+    if not cov_series:
+        return None
+
+    trail_samples = max(1, int(round(trailing_sec * base_fs)))
+    dwell_samples = max(1, int(round(min_dwell_sec * base_fs)))
+    steady_count = 0
+    stop_idx = None
+
+    for i in range(trail_samples, len(w)):
+        deltas = []
+        for series in cov_series:
+            if i >= len(series):
+                continue
+            cur = series[i]
+            prev = series[i - trail_samples]
+            if not np.isfinite(cur) or not np.isfinite(prev):
+                continue
+            denom = max(abs(cur), 1e-9)
+            deltas.append(abs(cur - prev) / denom)
+        if not deltas:
+            continue
+
+        if max(deltas) <= threshold:
+            steady_count += 1
+            if steady_count >= dwell_samples:
+                stop_idx = i
+                break
+        else:
+            steady_count = 0
+
+    return stop_idx
+
+
+def apply_subsampling(arrays, spec: SubsampleSpec, window_start, ecosystem, site, base_fs=BASE_RAW_FS):
+    """
+    Apply a downsampling strategy before any processing.
+    Returns (subsampled_arrays, effective_fs, metadata_dict).
+    """
+    mode = SubsampleMode(spec.mode)
+    meta = {
+        "subsample_mode": mode.value,
+        "subsample_label": spec.label(),
+    }
+
+    n = len(arrays["w"]) if "w" in arrays else 0
+    if n == 0:
+        return arrays, base_fs, meta
+
+    if mode == SubsampleMode.DIURNAL:
+        is_day = is_daytime(window_start, ecosystem, site)
+        child = spec.day_spec if is_day else spec.night_spec
+        if child is None:
+            child = spec.night_spec if is_day else spec.day_spec
+        meta["diurnal_phase"] = "day" if is_day else "night"
+        if child is None:
+            return arrays, base_fs, meta
+        sub_arrays, eff_fs, child_meta = apply_subsampling(
+            arrays, child, window_start, ecosystem, site, base_fs=base_fs
+        )
+        meta.update(child_meta)
+        return sub_arrays, eff_fs, meta
+
+    if mode == SubsampleMode.DECIMATE:
+        factor = spec.decimate_factor if spec.decimate_factor else 1
+        factor = max(1, int(factor))
+        sub_arrays = {k: v[::factor] for k, v in arrays.items()}
+        eff_fs = base_fs / factor
+        meta.update({
+            "decimate_factor": factor,
+            "target_fs": eff_fs,
+            "kept_fraction": 1.0 / factor,
+        })
+        return sub_arrays, eff_fs, meta
+
+    if mode == SubsampleMode.BURST:
+        on_sec = spec.burst_on_sec if spec.burst_on_sec is not None else 5.0
+        off_sec = spec.burst_off_sec if spec.burst_off_sec is not None else 25.0
+        on_samples = max(1, int(round(on_sec * base_fs)))
+        off_samples = max(1, int(round(off_sec * base_fs)))
+
+        mask = np.zeros(n, dtype=bool)
+        idx = 0
+        while idx < n:
+            end_on = min(n, idx + on_samples)
+            mask[idx:end_on] = True
+            idx = end_on + off_samples
+
+        sub_arrays, kept_fraction = _apply_mask(arrays, mask)
+        meta.update({
+            "burst_on_sec": on_sec,
+            "burst_off_sec": off_sec,
+            "kept_fraction": kept_fraction,
+            "target_fs": base_fs,
+        })
+        return sub_arrays, base_fs, meta
+
+    if mode == SubsampleMode.OGIVE_STOP:
+        threshold = spec.ogive_threshold if spec.ogive_threshold is not None else 0.02
+        trailing_sec = spec.ogive_trailing_sec if spec.ogive_trailing_sec is not None else 120.0
+        min_dwell_sec = spec.ogive_min_dwell_sec if spec.ogive_min_dwell_sec is not None else 60.0
+
+        stop_idx = _detect_ogive_stop_index(arrays, base_fs, threshold, trailing_sec, min_dwell_sec)
+        if stop_idx is None:
+            meta.update({
+                "ogive_stop_time_sec": None,
+                "kept_fraction": 1.0,
+                "target_fs": base_fs,
+                "ogive_threshold": threshold,
+                "ogive_trailing_sec": trailing_sec,
+                "ogive_min_dwell_sec": min_dwell_sec,
+            })
+            return arrays, base_fs, meta
+
+        mask = np.zeros(n, dtype=bool)
+        mask[: stop_idx + 1] = True
+        sub_arrays, kept_fraction = _apply_mask(arrays, mask)
+        meta.update({
+            "ogive_stop_time_sec": (stop_idx + 1) / base_fs,
+            "kept_fraction": kept_fraction,
+            "target_fs": base_fs,
+            "ogive_threshold": threshold,
+            "ogive_trailing_sec": trailing_sec,
+            "ogive_min_dwell_sec": min_dwell_sec,
+        })
+        return sub_arrays, base_fs, meta
+
+    # Fallback: no change
+    return arrays, base_fs, meta
+
+
+# =============================================================
 # Simple air property helpers for flux scaling
 # =============================================================
 
@@ -327,6 +498,8 @@ def compute_fluxes(w, Ts, mr_CO2, mr_H2O):
 
 def process_window_for_theta(arrays, theta, site_id, theta_index,
                              window_start, rotation_mode, lag_samples, ecosystem,
+                             subsample_spec: SubsampleSpec | None = None,
+                             subsample_index: int | None = None,
                              seed=None):
     """
         arrays = df_to_arrays(df), containing numpy arrays:
@@ -340,7 +513,7 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
             5) returns bias metrics
         """
     rng = np.random.default_rng(seed)
-    f_raw = 20.0               # ICOS raw sampling frequency
+    f_raw = BASE_RAW_FS               # ICOS raw sampling frequency
     dt = 1.0 / f_raw
 
     # ------------------------------------------------------------
@@ -360,10 +533,10 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     # -1. Apply precomputed nominal timelag to analyzer channels
     # ============================================================
 
-    rho_CO2_lag = apply_integer_lag(rho_CO2, lag_samples)
-    rho_H2O_lag = apply_integer_lag(rho_H2O, lag_samples)
-    T_cell_lag  = apply_integer_lag(T_cell, lag_samples)
-    P_cell_lag  = apply_integer_lag(P_cell, lag_samples)
+    rho_CO2_lag_ref = apply_integer_lag(rho_CO2, lag_samples)
+    rho_H2O_lag_ref = apply_integer_lag(rho_H2O, lag_samples)
+    T_cell_lag_ref  = apply_integer_lag(T_cell, lag_samples)
+    P_cell_lag_ref  = apply_integer_lag(P_cell, lag_samples)
 
     # ============================================================
     # 0. Double rotation on reference wind (tilt correction)
@@ -375,8 +548,8 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     # 1. Reference mixing ratios (undegraded)
     # ============================================================
 
-    mr_CO2_ref = density_to_mr(rho_CO2_lag * 1e-3, T_cell_lag, P_cell_lag)  # mmol/m3 -> mol/m3
-    mr_H2O_ref = density_to_mr(rho_H2O_lag * 1e-3, T_cell_lag, P_cell_lag)
+    mr_CO2_ref = density_to_mr(rho_CO2_lag_ref * 1e-3, T_cell_lag_ref, P_cell_lag_ref)  # mmol/m3 -> mol/m3
+    mr_H2O_ref = density_to_mr(rho_H2O_lag_ref * 1e-3, T_cell_lag_ref, P_cell_lag_ref)
 
     # ============================================================
     # 2. Reference fluxes (20 Hz, rotated)
@@ -385,7 +558,38 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     F_CO2_ref, F_LE_ref, F_H_ref = compute_fluxes(
         w_ref_rot, Ts, mr_CO2_ref, mr_H2O_ref
     )
-    mol_density_ref, mass_density_ref = mean_air_properties(T_cell_lag, P_cell_lag)
+    mol_density_ref, mass_density_ref = mean_air_properties(T_cell_lag_ref, P_cell_lag_ref)
+
+    # ------------------------------------------------------------
+    # Subsampling (applied before any processing of degraded branch)
+    # ------------------------------------------------------------
+    arrays_deg = arrays
+    subsample_meta = {}
+    f_eff = f_raw
+    if subsample_spec is not None:
+        arrays_deg, f_eff, subsample_meta = apply_subsampling(
+            arrays, subsample_spec, window_start, ecosystem, site_id, base_fs=f_raw
+        )
+
+    lag_samples_eff = lag_samples
+    if subsample_spec is not None and f_eff > 0:
+        lag_samples_eff = int(round(lag_samples * (f_eff / f_raw)))
+
+    dt = 1.0 / f_eff if f_eff > 0 else dt
+
+    u       = arrays_deg["u"]
+    v       = arrays_deg["v"]
+    w       = arrays_deg["w"]
+    Ts      = arrays_deg["Ts"]
+    rho_CO2 = arrays_deg["rho_CO2"]
+    rho_H2O = arrays_deg["rho_H2O"]
+    T_cell  = arrays_deg["T_cell"]
+    P_cell  = arrays_deg["P_cell"]
+
+    rho_CO2_lag = apply_integer_lag(rho_CO2, lag_samples_eff)
+    rho_H2O_lag = apply_integer_lag(rho_H2O, lag_samples_eff)
+    T_cell_lag  = apply_integer_lag(T_cell, lag_samples_eff)
+    P_cell_lag  = apply_integer_lag(P_cell, lag_samples_eff)
 
     # ============================================================
     # 3. Sonic degradations
@@ -423,11 +627,11 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     # Common lag jitter applied to analyzer channels (densities and T_cell)
     if theta.sigma_lag_jitter > 0:
         jitter_seconds = rng.normal(loc=0.0, scale=theta.sigma_lag_jitter)
-        delay_samples = jitter_seconds * f_raw
-        rhoC_j = apply_lag_jitter(rhoC_g, f_raw, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
-        rhoW_j = apply_lag_jitter(rhoW_g, f_raw, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
-        Tcell_j = apply_lag_jitter(Tcell_n, f_raw, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
-        Pcell_j = apply_lag_jitter(P_cell, f_raw, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
+        delay_samples = jitter_seconds * f_eff
+        rhoC_j = apply_lag_jitter(rhoC_g, f_eff, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
+        rhoW_j = apply_lag_jitter(rhoW_g, f_eff, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
+        Tcell_j = apply_lag_jitter(Tcell_n, f_eff, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
+        Pcell_j = apply_lag_jitter(P_cell, f_eff, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
     else:
         rhoC_j = rhoC_g
         rhoW_j = rhoW_g
@@ -502,7 +706,7 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     res_LE  = F_LE_deg_scaled  - F_LE_ref_scaled
     res_H   = F_H_deg_scaled   - F_H_ref_scaled
 
-    return {
+    out = {
         "site_id": site_id,
         "theta_index": theta_index,
         "rotation_mode": rotation_mode,
@@ -529,14 +733,26 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
         "res_H": res_H,
 
         "w_mean_deg": w_mean_deg,
+        "effective_fs": f_eff,
+        "lag_samples_effective": lag_samples_eff,
     }
+
+    if subsample_spec is not None:
+        out["subsample_mode"] = subsample_spec.mode.value
+        out["subsample_label"] = subsample_spec.label()
+        out["subsample_index"] = subsample_index
+        out.update(subsample_meta)
+
+    return out
 
 
 # =============================================================
 # Wrapper called from site_runner
 # =============================================================
 
-def process_single_window(path, arrays, theta, site_id, theta_index, rotation_mode, lag_samples, ecosystem):
+def process_single_window(path, arrays, theta, site_id, theta_index, rotation_mode, lag_samples, ecosystem,
+                          subsample_spec: SubsampleSpec | None = None,
+                          subsample_index: int | None = None):
     """
     Wrapper that extracts the window timestamp from the file name,
     then calls the physics engine.
@@ -552,4 +768,6 @@ def process_single_window(path, arrays, theta, site_id, theta_index, rotation_mo
         lag_samples=lag_samples,
         window_start=window_start,   # <-- pass timestamp here
         ecosystem=ecosystem,
+        subsample_spec=subsample_spec,
+        subsample_index=subsample_index,
     )

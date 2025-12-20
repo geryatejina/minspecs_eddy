@@ -16,6 +16,24 @@ from pathlib import Path
 from .sampling import sample_thetas
 from .site_runner import run_site
 from .io_icos import ecosystem_sites
+from .types import Theta, SubsampleSpec
+
+
+def _default_theta(base_fs: float = 20.0) -> Theta:
+    return Theta(
+        fs_sonic=base_fs,
+        tau_sonic=0.0,
+        sigma_w_noise=0.0,
+        sigma_Ts_noise=0.0,
+        fs_irga=base_fs,
+        tau_irga=0.0,
+        sigma_CO2dens_noise=0.0,
+        sigma_H2Odens_noise=0.0,
+        sigma_Tcell_noise=0.0,
+        k_CO2_Tsens=0.0,
+        k_H2O_Tsens=0.0,
+        sigma_lag_jitter=0.0,
+    )
 
 def run_experiment(
     ecosystem_site_list=None,
@@ -104,4 +122,64 @@ def run_experiment(
         print(f"[main] Completed site: {ecosystem}/{site}")
 
     print("\n[main] All sites processed.")
+    return experiment_results
+
+
+def run_subsampling_experiment(
+    ecosystem_site_list=None,
+    subsample_specs: list[SubsampleSpec] | tuple[SubsampleSpec, ...] = (),
+    rotation_modes: list[str] | tuple[str, ...] = ("double", "none"),
+    data_root: Path = None,
+    max_workers: int | None = None,
+    max_files_per_site: int | None = None,
+    file_pattern: str = "*.npz",
+    skip_map: dict | None = None,
+):
+    """
+    Run subsampling-only experiment across all sites.
+
+    Parameters mirror run_experiment, but theta sampling is replaced by a list of
+    SubsampleSpec strategies. Each spec is evaluated independently.
+    """
+    if not subsample_specs:
+        raise ValueError("subsample_specs must be provided for run_subsampling_experiment().")
+
+    # --- automatic site discovery ---
+    if ecosystem_site_list is None:
+        if data_root is None:
+            raise ValueError("If ecosystem_site_list is not provided, data_root must be set.")
+
+        print(f"[main] Discovering ICOS sites in {data_root} ...")
+        ecosystem_site_list = list(ecosystem_sites(data_root))
+
+        print(f"[main] Found {len(ecosystem_site_list)} sites:")
+        for eco, site in ecosystem_site_list:
+            print(f"   - {eco}/{site}")
+
+    experiment_results = {}
+    rotation_modes = list(rotation_modes)
+    theta_list = [_default_theta()]
+    subspecs_list = list(subsample_specs)
+
+    # --- loop over sites ---
+    for ecosystem, site in ecosystem_site_list:
+        print(f"\n[main] === Processing site (subsampling): {ecosystem}/{site} ===")
+
+        site_results = run_site(
+            site_id=site,
+            ecosystem=ecosystem,
+            theta_list=theta_list,
+            rotation_modes=rotation_modes,
+            data_root=data_root,
+            max_workers=max_workers,
+            max_files=max_files_per_site,
+            file_pattern=file_pattern,
+            skip_set=(skip_map or {}).get((ecosystem, site)),
+            subsample_specs=subspecs_list,
+        )
+
+        experiment_results[(ecosystem, site)] = site_results
+        print(f"[main] Completed site: {ecosystem}/{site}")
+
+    print("\n[main] All subsampling runs processed.")
     return experiment_results
