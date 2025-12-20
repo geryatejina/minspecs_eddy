@@ -129,16 +129,15 @@ def compute_qc_metrics(
     )
     if min_len == 0:
         return {  # all metrics NaN if no overlapping samples
-            "var_ratio_w": np.nan,
-            "var_ratio_T": np.nan,
-            "var_ratio_CO2": np.nan,
-            "var_ratio_H2O": np.nan,
             "cov_ratio_T": np.nan,
             "cov_ratio_CO2": np.nan,
             "cov_ratio_H2O": np.nan,
             "rel_bias_CO2": np.nan,
             "rel_bias_LE": np.nan,
             "rel_bias_H": np.nan,
+            "bias_CO2": np.nan,
+            "bias_LE": np.nan,
+            "bias_H": np.nan,
             "rmse_CO2": np.nan,
             "rmse_H2O": np.nan,
             "rmse_T": np.nan,
@@ -162,26 +161,6 @@ def compute_qc_metrics(
     Ts_deg = Ts_deg[:min_len]
     mrCO2_deg = mrCO2_deg[:min_len]
     mrH2O_deg = mrH2O_deg[:min_len]
-
-    # ---------------------------------------------
-    # Variances
-    # ---------------------------------------------
-    var_w_ref  = safe_var(w_ref)
-    var_w_deg  = safe_var(w_deg)
-    var_T_ref  = safe_var(Ts_ref)
-    var_T_deg  = safe_var(Ts_deg)
-
-    var_CO2_ref = safe_var(mrCO2_ref)
-    var_CO2_deg = safe_var(mrCO2_deg)
-
-    var_H2O_ref = safe_var(mrH2O_ref)
-    var_H2O_deg = safe_var(mrH2O_deg)
-
-    # Variance ratios
-    vr_w   = var_w_deg   / var_w_ref   if var_w_ref > 0 else np.nan
-    vr_T   = var_T_deg   / var_T_ref   if var_T_ref > 0 else np.nan
-    vr_CO2 = var_CO2_deg / var_CO2_ref if var_CO2_ref > 0 else np.nan
-    vr_H2O = var_H2O_deg / var_H2O_ref if var_H2O_ref > 0 else np.nan
 
     # ---------------------------------------------
     # Covariances (other than fluxes)
@@ -243,11 +222,6 @@ def compute_qc_metrics(
     # Collect everything into a dict
     # ---------------------------------------------
     return dict(
-        var_ratio_w    = vr_w,
-        var_ratio_T    = vr_T,
-        var_ratio_CO2  = vr_CO2,
-        var_ratio_H2O  = vr_H2O,
-
         cov_ratio_T    = cov_ratio_T,
         cov_ratio_CO2  = cov_ratio_CO2,
         cov_ratio_H2O  = cov_ratio_H2O,
@@ -255,6 +229,9 @@ def compute_qc_metrics(
         rel_bias_CO2   = rel_bias_CO2,
         rel_bias_LE    = rel_bias_LE,
         rel_bias_H     = rel_bias_H,
+        bias_CO2       = bias_CO2,
+        bias_LE        = bias_LE,
+        bias_H         = bias_H,
 
         rmse_CO2       = rmse_CO2,
         rmse_H2O       = rmse_H2O,

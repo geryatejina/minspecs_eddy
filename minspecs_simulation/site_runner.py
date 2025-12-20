@@ -37,6 +37,7 @@ def _process_file_all(
     theta_list,
     rotation_modes,
     site_id: str,
+    ecosystem: str,
     lag_samples: int,
 ):
     """
@@ -56,6 +57,7 @@ def _process_file_all(
                 theta_index,
                 rotation_mode,
                 lag_samples,
+                ecosystem,
             ))
     return results
 
@@ -159,7 +161,7 @@ def run_site(
     # Parallel over files; each worker reads once and fans out over all combos
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
         futures = {
-            ex.submit(_process_file_all, path, theta_list, rotation_modes, site_id, lag_samples): path
+            ex.submit(_process_file_all, path, theta_list, rotation_modes, site_id, ecosystem, lag_samples): path
             for path in file_paths
         }
         for f in as_completed(futures):

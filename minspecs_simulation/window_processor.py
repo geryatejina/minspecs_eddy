@@ -22,6 +22,7 @@ import numpy as np
 from .types import Theta
 from .fracdelay import fractional_delay
 from .io_icos import extract_window_timestamp_from_filename
+from .site_meta import get_lat_lon
 
 try:
     import numba as _nb  # optional acceleration
@@ -165,6 +166,69 @@ def apply_integer_lag(x, lag):
 
 
 # =============================================================
+# Day/night classification (simple solar elevation)
+# =============================================================
+
+def solar_declination(day_of_year: int) -> float:
+    # approximate in radians
+    return 0.409 * np.sin(2 * np.pi * (day_of_year - 80) / 365.0)
+
+
+def solar_elevation_deg(ts, lat_deg: float, lon_deg: float):
+    """
+    Compute solar elevation angle (degrees) at timestamp ts (naive local time).
+    """
+    lat = np.deg2rad(lat_deg)
+    dec = solar_declination(ts.timetuple().tm_yday)
+    # local solar time approximation: hour angle in radians
+    hour = ts.hour + ts.minute / 60.0
+    # Timestamps are already in local standard time; do not apply longitude shift
+    solar_time = hour
+    omega = np.deg2rad(15.0 * (solar_time - 12.0))
+    sin_el = np.sin(lat) * np.sin(dec) + np.cos(lat) * np.cos(dec) * np.cos(omega)
+    el = np.arcsin(np.clip(sin_el, -1, 1))
+    return np.rad2deg(el)
+
+
+def is_daytime(ts, ecosystem: str, site: str) -> bool:
+    """
+    Classify day/night. If lat/lon known, use solar elevation > 0 deg.
+    Otherwise, fallback to simple hour-based (6-18).
+    """
+    coords = get_lat_lon(ecosystem, site)
+    if coords:
+        lat, lon = coords
+        el = solar_elevation_deg(ts, lat, lon)
+        return el > 0.0
+    # fallback heuristic
+    return 6 <= ts.hour < 18
+
+
+# =============================================================
+# Simple air property helpers for flux scaling
+# =============================================================
+
+R_UNIV = 8.314462618  # J/(mol K)
+R_SPEC_DRY = 287.05   # J/(kg K)
+CP_DRY = 1005.0       # J/(kg K)
+LV_PER_MOL = 44100.0  # J/mol (approx; 2.45e6 J/kg * 18e-3 kg/mol)
+
+
+def mean_air_properties(T_cell, P_cell):
+    """
+    Compute mean molar and mass air density from cell T (°C) and P (kPa).
+    Returns (mol_density, mass_density).
+    """
+    T_K = np.nanmean(T_cell) + 273.15
+    P_Pa = np.nanmean(P_cell) * 1000.0
+    if not np.isfinite(T_K) or not np.isfinite(P_Pa) or T_K <= 0:
+        return np.nan, np.nan
+    mol_density = P_Pa / (R_UNIV * T_K)
+    mass_density = P_Pa / (R_SPEC_DRY * T_K)
+    return mol_density, mass_density
+
+
+# =============================================================
 # Low-pass filter (first-order IIR)
 # =============================================================
 
@@ -262,7 +326,7 @@ def compute_fluxes(w, Ts, mr_CO2, mr_H2O):
 # =============================================================
 
 def process_window_for_theta(arrays, theta, site_id, theta_index,
-                             window_start, rotation_mode, lag_samples,
+                             window_start, rotation_mode, lag_samples, ecosystem,
                              seed=None):
     """
         arrays = df_to_arrays(df), containing numpy arrays:
@@ -275,8 +339,6 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
             4) computes degraded fluxes in the specified rotation mode
             5) returns bias metrics
         """
-    from .qc import compute_qc_metrics
-
     rng = np.random.default_rng(seed)
     f_raw = 20.0               # ICOS raw sampling frequency
     dt = 1.0 / f_raw
@@ -323,6 +385,7 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     F_CO2_ref, F_LE_ref, F_H_ref = compute_fluxes(
         w_ref_rot, Ts, mr_CO2_ref, mr_H2O_ref
     )
+    mol_density_ref, mass_density_ref = mean_air_properties(T_cell_lag, P_cell_lag)
 
     # ============================================================
     # 3. Sonic degradations
@@ -405,6 +468,7 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     F_CO2_raw, F_LE_raw, F_H_raw = compute_fluxes(
         w_d, Ts_d, mr_CO2_deg, mr_H2O_deg
     )
+    mol_density_deg, mass_density_deg = mean_air_properties(Tcell_d, Pcell_d)
 
     if rotation_mode == "double":
         F_CO2_deg, F_LE_deg, F_H_deg = compute_fluxes(
@@ -417,62 +481,62 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
         F_CO2_deg, F_LE_deg, F_H_deg = F_CO2_corr, F_LE_corr, F_H_raw
 
     # ============================================================
-    # 8. QC metrics (using rotated reference, mode-dependent degraded)
+    # 8. Package all metrics together (flux-focused)
     # ============================================================
 
-    qc = compute_qc_metrics(
-        w_ref=w_ref_rot,
-        Ts_ref=Ts,
-        mrCO2_ref=mr_CO2_ref,
-        mrH2O_ref=mr_H2O_ref,
+    # Scale fluxes to physical units (for metrics and interpretation)
+    F_CO2_ref_scaled = F_CO2_ref * mol_density_ref * 1e6 if np.isfinite(mol_density_ref) else np.nan  # µmol m-2 s-1
+    F_CO2_deg_scaled = F_CO2_deg * mol_density_deg * 1e6 if np.isfinite(mol_density_deg) else np.nan
+    F_CO2_raw_scaled = F_CO2_raw * mol_density_deg * 1e6 if np.isfinite(mol_density_deg) else np.nan
 
-        w_deg=w_deg_for_flux,
-        Ts_deg=Ts_d,
-        mrCO2_deg=mr_CO2_deg,
-        mrH2O_deg=mr_H2O_deg,
+    F_LE_ref_scaled = F_LE_ref * mol_density_ref * LV_PER_MOL if np.isfinite(mol_density_ref) else np.nan  # W m-2
+    F_LE_deg_scaled = F_LE_deg * mol_density_deg * LV_PER_MOL if np.isfinite(mol_density_deg) else np.nan
+    F_LE_raw_scaled = F_LE_raw * mol_density_deg * LV_PER_MOL if np.isfinite(mol_density_deg) else np.nan
 
-        F_CO2_ref=F_CO2_ref,
-        F_CO2_deg=F_CO2_deg,
-        F_LE_ref=F_LE_ref,
-        F_LE_deg=F_LE_deg,
-        F_H_ref=F_H_ref,
-        F_H_deg=F_H_deg,
-    )
+    F_H_ref_scaled = F_H_ref * mass_density_ref * CP_DRY if np.isfinite(mass_density_ref) else np.nan  # W m-2
+    F_H_deg_scaled = F_H_deg * mass_density_deg * CP_DRY if np.isfinite(mass_density_deg) else np.nan
+    F_H_raw_scaled = F_H_raw * mass_density_deg * CP_DRY if np.isfinite(mass_density_deg) else np.nan
 
-    # ============================================================
-    # 9. Package all metrics together
-    # ============================================================
+    # Residuals (degraded - reference)
+    res_CO2 = F_CO2_deg_scaled - F_CO2_ref_scaled
+    res_LE  = F_LE_deg_scaled  - F_LE_ref_scaled
+    res_H   = F_H_deg_scaled   - F_H_ref_scaled
 
     return {
         "site_id": site_id,
         "theta_index": theta_index,
         "rotation_mode": rotation_mode,
+        "is_day": is_daytime(window_start, ecosystem, site_id),
 
         "window_start": window_start,
 
-        "F_CO2_ref": F_CO2_ref,
-        "F_CO2_deg": F_CO2_deg,
-        "F_LE_ref": F_LE_ref,
-        "F_LE_deg": F_LE_deg,
-        "F_H_ref": F_H_ref,
-        "F_H_deg": F_H_deg,
+        # Fluxes (scaled)
+        "F_CO2_ref": F_CO2_ref_scaled,
+        "F_CO2_deg": F_CO2_deg_scaled,
+        "F_CO2_raw": F_CO2_raw_scaled,
 
-        "F_CO2_raw": F_CO2_raw,
-        "F_LE_raw": F_LE_raw,
-        "F_H_raw": F_H_raw,
+        "F_LE_ref": F_LE_ref_scaled,
+        "F_LE_deg": F_LE_deg_scaled,
+        "F_LE_raw": F_LE_raw_scaled,
+
+        "F_H_ref": F_H_ref_scaled,
+        "F_H_deg": F_H_deg_scaled,
+        "F_H_raw": F_H_raw_scaled,
+
+        # Residuals
+        "res_CO2": res_CO2,
+        "res_LE": res_LE,
+        "res_H": res_H,
+
         "w_mean_deg": w_mean_deg,
-
-        "bias_CO2": F_CO2_deg - F_CO2_ref,
-        "bias_LE":  F_LE_deg  - F_LE_ref,
-        "bias_H":   F_H_deg   - F_H_ref,
-    } | qc
+    }
 
 
 # =============================================================
 # Wrapper called from site_runner
 # =============================================================
 
-def process_single_window(path, arrays, theta, site_id, theta_index, rotation_mode, lag_samples):
+def process_single_window(path, arrays, theta, site_id, theta_index, rotation_mode, lag_samples, ecosystem):
     """
     Wrapper that extracts the window timestamp from the file name,
     then calls the physics engine.
@@ -487,4 +551,5 @@ def process_single_window(path, arrays, theta, site_id, theta_index, rotation_mo
         rotation_mode=rotation_mode,
         lag_samples=lag_samples,
         window_start=window_start,   # <-- pass timestamp here
+        ecosystem=ecosystem,
     )

@@ -34,7 +34,7 @@ if __name__ == "__main__":
         data_root=Path(r"D:\data\ec\raw\ICOS_npz"),
         file_pattern="*.npz",
         max_workers=8,
-        max_files_per_site=336,  # first week (7 days * 48 half-hour windows)
+        max_files_per_site=1440,  # ~1 month (30 days * 48 half-hour windows)
         theta_seed=42,  # deterministic theta sampling for resume
         skip_map=None,
     )
