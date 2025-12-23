@@ -236,44 +236,87 @@ def run_site(
                 pct = (processed / total_files * 100) if total_files else 100.0
                 print(f"[site_runner] {ecosystem}/{site_id}: {processed}/{total_files} windows ({pct:.0f}%) done")
 
-    # Optional: log per-window metrics for distribution plots
+    # Optional: log per-window metrics. For subsampling, write a wide format:
+    # window_start, is_day, ogive_stop_time_sec, then F_{flux}_ref and F_{flux}_{label} per subsample label.
     if window_log_dir:
-        window_log_rows = []
-        for (theta_index, rotation_mode), window_results in window_results_by_combo.items():
-            for w in window_results:
-                window_log_rows.append({
-                    "ecosystem": ecosystem,
-                    "site": site_id,
-                    "theta_index": theta_index,
-                    "rotation_mode": rotation_mode,
-                    "subsample_index": w.get("subsample_index"),
-                    "subsample_mode": w.get("subsample_mode"),
-                    "subsample_label": w.get("subsample_label"),
-                    "window_start": w.get("window_start").isoformat() if w.get("window_start") else None,
-                    "is_day": w.get("is_day"),
-                    "kept_fraction": w.get("kept_fraction"),
-                    "ogive_stop_time_sec": w.get("ogive_stop_time_sec"),
-                    "effective_fs": w.get("effective_fs"),
-                    "target_fs": w.get("target_fs"),
-                    "F_CO2_ref": w.get("F_CO2_ref"),
-                    "F_CO2_deg": w.get("F_CO2_deg"),
-                    "F_CO2_raw": w.get("F_CO2_raw"),
-                    "F_LE_ref": w.get("F_LE_ref"),
-                    "F_LE_deg": w.get("F_LE_deg"),
-                    "F_LE_raw": w.get("F_LE_raw"),
-                    "F_H_ref": w.get("F_H_ref"),
-                    "F_H_deg": w.get("F_H_deg"),
-                    "F_H_raw": w.get("F_H_raw"),
-                    "res_CO2": w.get("res_CO2"),
-                    "res_LE": w.get("res_LE"),
-                    "res_H": w.get("res_H"),
-                })
-        if window_log_rows:
-            log_dir = Path(window_log_dir)
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = log_dir / f"{ecosystem}_{site_id}_windows_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
-            df_log = pd.DataFrame(window_log_rows)
-            df_log.to_csv(log_path, index=False)
+        log_dir = Path(window_log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        if subsample_specs:
+            labels = [spec.label() for spec in subsample_specs]
+            # Collect rows keyed by timestamp
+            rows_by_ts = {}
+            for (theta_index, rotation_mode), window_results in window_results_by_combo.items():
+                label = subsample_specs[theta_index].label() if theta_index is not None else None
+                for w in window_results:
+                    ts = w.get("window_start")
+                    if ts is None:
+                        continue
+                    key = ts
+                    if key not in rows_by_ts:
+                        rows_by_ts[key] = {
+                            "window_start": ts.isoformat(),
+                            "is_day": w.get("is_day"),
+                            "ogive_stop_time_sec": w.get("ogive_stop_time_sec"),
+                        }
+                    row = rows_by_ts[key]
+                    # If an ogive window arrives later, populate the stop time
+                    if row.get("ogive_stop_time_sec") is None and w.get("ogive_stop_time_sec") is not None:
+                        row["ogive_stop_time_sec"] = w.get("ogive_stop_time_sec")
+                    for flux in ["CO2", "LE", "H"]:
+                        ref_key = f"F_{flux}_ref"
+                        if ref_key not in row:
+                            row[ref_key] = w.get(ref_key)
+                        if label:
+                            row[f"F_{flux}_{label}"] = w.get(f"F_{flux}_deg")
+
+            if rows_by_ts:
+                log_cols = ["window_start", "is_day", "ogive_stop_time_sec"]
+                for flux in ["CO2", "LE", "H"]:
+                    log_cols.append(f"F_{flux}_ref")
+                    for label in labels:
+                        log_cols.append(f"F_{flux}_{label}")
+                df_log = pd.DataFrame(rows_by_ts.values())
+                df_log.sort_values("window_start", inplace=True)
+                df_log = df_log[log_cols]
+                log_path = log_dir / f"{ecosystem}_{site_id}_windows_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
+                df_log.to_csv(log_path, index=False)
+        else:
+            # Legacy narrow log for non-subsampling paths
+            window_log_rows = []
+            for (theta_index, rotation_mode), window_results in window_results_by_combo.items():
+                for w in window_results:
+                    window_log_rows.append({
+                        "ecosystem": ecosystem,
+                        "site": site_id,
+                        "theta_index": theta_index,
+                        "rotation_mode": rotation_mode,
+                        "subsample_index": w.get("subsample_index"),
+                        "subsample_mode": w.get("subsample_mode"),
+                        "subsample_label": w.get("subsample_label"),
+                        "window_start": w.get("window_start").isoformat() if w.get("window_start") else None,
+                        "is_day": w.get("is_day"),
+                        "kept_fraction": w.get("kept_fraction"),
+                        "ogive_stop_time_sec": w.get("ogive_stop_time_sec"),
+                        "effective_fs": w.get("effective_fs"),
+                        "target_fs": w.get("target_fs"),
+                        "F_CO2_ref": w.get("F_CO2_ref"),
+                        "F_CO2_deg": w.get("F_CO2_deg"),
+                        "F_CO2_raw": w.get("F_CO2_raw"),
+                        "F_LE_ref": w.get("F_LE_ref"),
+                        "F_LE_deg": w.get("F_LE_deg"),
+                        "F_LE_raw": w.get("F_LE_raw"),
+                        "F_H_ref": w.get("F_H_ref"),
+                        "F_H_deg": w.get("F_H_deg"),
+                        "F_H_raw": w.get("F_H_raw"),
+                        "res_CO2": w.get("res_CO2"),
+                        "res_LE": w.get("res_LE"),
+                        "res_H": w.get("res_H"),
+                    })
+            if window_log_rows:
+                log_path = log_dir / f"{ecosystem}_{site_id}_windows_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
+                df_log = pd.DataFrame(window_log_rows)
+                df_log.to_csv(log_path, index=False)
 
     # Aggregate per theta
     for (theta_index, rotation_mode), window_results in window_results_by_combo.items():

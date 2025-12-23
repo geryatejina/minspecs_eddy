@@ -37,19 +37,19 @@ SELECT_COLUMNS = [
 
 SANITY_LIMITS = {
     # Wind (m/s)
-    "U": (-20.0, 20.0),
-    "V": (-20.0, 20.0),
-    "W": (-20.0, 20.0),
+    "U": (-15.0, 15.0),
+    "V": (-15.0, 15.0),
+    "W": (-3.0, 3.0),
     # Sonic temperature is stored in Kelvin in the cached NPZ files
-    "T_SONIC": (240.0, 330.0),  # K
+    "T_SONIC": (250.0, 320.0),  # K
     # Cell temperature is in degC
-    "T_CELL": (-20.0, 40.0),
+    "T_CELL": (-10.0, 40.0),
     # Gas densities: CO2 ~12–40 mmol/m3 for 300–1000 ppm at typical air density
-    "CO2_CONC": (5.0, 50.0),    # mmol/m3
+    "CO2_CONC": (7.0, 30.0),    # mmol/m3
     # Water vapor density: generous envelope (typical < 1000 mmol/m3)
-    "H2O_CONC": (0.0, 2000.0),  # mmol/m3
+    "H2O_CONC": (0.0, 1000.0),  # mmol/m3
     # Cell pressure (kPa)
-    "PRESS_CELL": (80.0, 110.0),
+    "PRESS_CELL": (90.0, 105.0),
 }
 
 SANITY_LIMITS_ARRAY = {

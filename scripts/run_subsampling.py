@@ -38,10 +38,19 @@ def build_subsample_specs():
 if __name__ == "__main__":
     sites = [
         ("igbp_CRO", "BE-Lon"),
+        ("igbp_CRO", "DE-Geb"),
+        ("igbp_CSH", "BE-Maa"),
         ("igbp_DBF", "CZ-Lnz"),
+        ("igbp_DBF", "DE-HoH"),
+        ("igbp_EBF", "FR-Pue"),
+        ("igbp_ENF", "Be-Bra"),
+        ("igbp_ENF", "CH-Dav"),
         ("igbp_GRA", "BE-Dor"),
-        ("igbp_WET", "FI-Sii"),
+        ("igbp_GRA", "FR-Lqu"),
         ("igbp_MF",  "BE-Vie"),
+        ("igbp_MF",  "IT-Cp2"),
+        ("igbp_WET", "FI-Sii"),
+        ("igbp_WET", "GL-ZaF"),
     ]
 
     subsample_specs = build_subsample_specs()
@@ -58,9 +67,9 @@ if __name__ == "__main__":
         max_workers=8,
         max_files_per_site=None,
         skip_map=None,    
-        outlier_lower_pct=3.0,
-        outlier_upper_pct=97.0,
+        outlier_lower_pct=7.0,
+        outlier_upper_pct=93.0,
         window_log_dir=results_dir,
     )
 
-    write_results_to_csv(results, results_dir / "subsampling_3sites_full_period.csv")
+    write_results_to_csv(results, results_dir / "subsampling_5sites_full_period.csv")
