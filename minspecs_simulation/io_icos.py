@@ -35,6 +35,34 @@ SELECT_COLUMNS = [
     "T_CELL", "PRESS_CELL",
 ]
 
+SANITY_LIMITS = {
+    # Wind (m/s)
+    "U": (-20.0, 20.0),
+    "V": (-20.0, 20.0),
+    "W": (-20.0, 20.0),
+    # Sonic temperature is stored in Kelvin in the cached NPZ files
+    "T_SONIC": (240.0, 330.0),  # K
+    # Cell temperature is in degC
+    "T_CELL": (-20.0, 40.0),
+    # Gas densities: CO2 ~12–40 mmol/m3 for 300–1000 ppm at typical air density
+    "CO2_CONC": (5.0, 50.0),    # mmol/m3
+    # Water vapor density: generous envelope (typical < 1000 mmol/m3)
+    "H2O_CONC": (0.0, 2000.0),  # mmol/m3
+    # Cell pressure (kPa)
+    "PRESS_CELL": (80.0, 110.0),
+}
+
+SANITY_LIMITS_ARRAY = {
+    "u": SANITY_LIMITS["U"],            # m/s
+    "v": SANITY_LIMITS["V"],            # m/s
+    "w": SANITY_LIMITS["W"],            # m/s
+    "Ts": SANITY_LIMITS["T_SONIC"],     # K (sonic temperature in cached NPZ)
+    "T_cell": SANITY_LIMITS["T_CELL"],  # degC
+    "rho_CO2": SANITY_LIMITS["CO2_CONC"],  # mmol/m3
+    "rho_H2O": SANITY_LIMITS["H2O_CONC"],  # mmol/m3
+    "P_cell": SANITY_LIMITS["PRESS_CELL"], # kPa
+}
+
 IDEAL_GAS_CONSTANT = 8.314462618  # J/(mol K)
 
 
@@ -116,7 +144,36 @@ def read_raw_file(file_path: Path) -> pd.DataFrame:
 
     # select only available needed columns
     cols = [c for c in SELECT_COLUMNS if c in df.columns]
-    return df[cols]
+    df = df[cols]
+
+    # Apply simple physical sanity filters; values outside are set to NaN.
+    for col, (lo, hi) in SANITY_LIMITS.items():
+        if col not in df.columns:
+            continue
+        mask = df[col].between(lo, hi)
+        df.loc[~mask, col] = np.nan
+
+    return df
+
+
+def _sanitize_arrays(arrays: dict) -> dict:
+    """
+    Apply physical sanity limits to array data (works for CSV- or NPZ-loaded inputs).
+    Units are assumed to match ICOS Level-0: wind m/s, temps degC, CO2/H2O mmol/m3, P kPa.
+    """
+    out = {}
+    for key, arr in arrays.items():
+        if key not in SANITY_LIMITS_ARRAY:
+            out[key] = arr
+            continue
+        lo, hi = SANITY_LIMITS_ARRAY[key]
+        a = np.asarray(arr, dtype=float)
+        mask = np.isfinite(a) & (a >= lo) & (a <= hi)
+        if not mask.all():
+            a = a.copy()
+            a[~mask] = np.nan
+        out[key] = a
+    return out
 
 
 def cache_csv_to_npz(csv_path: Path, raw_root: Path = DEFAULT_DATA_ROOT, cache_root: Path = DEFAULT_CACHE_ROOT, overwrite: bool = False) -> Path:
@@ -140,14 +197,17 @@ def cache_csv_to_npz(csv_path: Path, raw_root: Path = DEFAULT_DATA_ROOT, cache_r
 def load_window_arrays(path: Path):
     """
     Load window arrays from NPZ if present, otherwise parse CSV.
+    Applies sanity limits regardless of source.
     """
     if path.suffix.lower() == ".npz":
         data = np.load(path)
-        return {k: data[k] for k in data.files}
+        arrays = {k: data[k] for k in data.files}
+    else:
+        df = read_raw_file(path)
+        df = add_mixing_ratios(df)
+        arrays = df_to_arrays(df)
 
-    df = read_raw_file(path)
-    df = add_mixing_ratios(df)
-    return df_to_arrays(df)
+    return _sanitize_arrays(arrays)
 
 
 #=====================================================================

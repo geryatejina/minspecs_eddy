@@ -10,8 +10,6 @@ if str(ROOT) not in sys.path:
 
 from minspecs_simulation.io_icos import cache_csv_to_npz, DEFAULT_DATA_ROOT, DEFAULT_CACHE_ROOT
 
-SKIP_SITE = Path('igbp_EBF/FR-Pue')
-
 
 def main(raw_root: Path, cache_root: Path, overwrite: bool = False, report_every: int = 500, include_fr_pue: bool = False):
     total = converted = skipped = failed = 0
@@ -24,19 +22,17 @@ def main(raw_root: Path, cache_root: Path, overwrite: bool = False, report_every
     site_count = len(sites)
 
     for idx, (eco, site, site_dir) in enumerate(sites, 1):
-        if (not include_fr_pue) and (eco, site) == tuple(SKIP_SITE.parts):
-            print(f"[skip-site] {eco}/{site} ({idx}/{site_count})")
-            continue
-
         print(f"[site] {eco}/{site} ({idx}/{site_count})")
 
         for csv_path in sorted(site_dir.rglob('*.csv')):
             total += 1
             try:
-                target = cache_csv_to_npz(csv_path, raw_root=raw_root, cache_root=cache_root, overwrite=overwrite)
-                if target.exists() and not overwrite and target.stat().st_size > 0:
+                target_path = (cache_root / csv_path.relative_to(raw_root)).with_suffix(".npz")
+                if target_path.exists() and not overwrite and target_path.stat().st_size > 0:
                     skipped += 1  # existing cache file
                     continue
+
+                cache_csv_to_npz(csv_path, raw_root=raw_root, cache_root=cache_root, overwrite=overwrite)
                 converted += 1
             except Exception as e:
                 failed += 1

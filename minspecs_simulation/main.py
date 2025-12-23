@@ -134,6 +134,9 @@ def run_subsampling_experiment(
     max_files_per_site: int | None = None,
     file_pattern: str = "*.npz",
     skip_map: dict | None = None,
+    outlier_lower_pct: float = 5.0,
+    outlier_upper_pct: float = 95.0,
+    window_log_dir: Path | None = None,
 ):
     """
     Run subsampling-only experiment across all sites.
@@ -161,6 +164,13 @@ def run_subsampling_experiment(
     theta_list = [_default_theta()]
     subspecs_list = list(subsample_specs)
 
+    print(
+        f"[main] Starting subsampling experiment: "
+        f"{len(ecosystem_site_list)} site(s), "
+        f"{len(subspecs_list)} subsample spec(s), "
+        f"{len(rotation_modes)} rotation mode(s)"
+    )
+
     # --- loop over sites ---
     for ecosystem, site in ecosystem_site_list:
         print(f"\n[main] === Processing site (subsampling): {ecosystem}/{site} ===")
@@ -176,6 +186,9 @@ def run_subsampling_experiment(
             file_pattern=file_pattern,
             skip_set=(skip_map or {}).get((ecosystem, site)),
             subsample_specs=subspecs_list,
+            outlier_lower_pct=outlier_lower_pct,
+            outlier_upper_pct=outlier_upper_pct,
+            window_log_dir=window_log_dir,
         )
 
         experiment_results[(ecosystem, site)] = site_results

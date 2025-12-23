@@ -19,6 +19,8 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Optional
+from datetime import datetime
+import pandas as pd
 import numpy as np
 
 from .io_icos import (
@@ -95,6 +97,9 @@ def run_site(
     max_files: Optional[int] = None,
     skip_set: Optional[set[int]] = None,
     subsample_specs: Optional[List[SubsampleSpec]] = None,
+    outlier_lower_pct: float = 5.0,
+    outlier_upper_pct: float = 95.0,
+    window_log_dir: Optional[Path] = None,
 ) -> Dict[int, Dict]:
     """
     Run simulation for one site.
@@ -156,6 +161,13 @@ def run_site(
         pattern=file_pattern,
         max_files=max_files,
     ))
+    total_files = len(file_paths)
+    combos = (len(subsample_specs) if subsample_specs else len(theta_list)) * len(rotation_modes)
+    print(
+        f"[site_runner] {ecosystem}/{site_id}: "
+        f"{total_files} window(s) x {combos} combo(s); "
+        f"max_workers={max_workers if max_workers is not None else 'default'}"
+    )
 
     # Map (theta_index, rotation_mode) -> list of window results
     if subsample_specs:
@@ -213,10 +225,55 @@ def run_site(
             ex.submit(_process_file_all, path, theta_list, rotation_modes, site_id, ecosystem, lag_samples, subsample_specs): path
             for path in file_paths
         }
+        processed = 0
+        report_every = max(1, total_files // 10) if total_files else 1
         for f in as_completed(futures):
             for result in f.result():
                 key = (result["theta_index"], result["rotation_mode"])
                 window_results_by_combo[key].append(result)
+            processed += 1
+            if processed % report_every == 0 or processed == total_files:
+                pct = (processed / total_files * 100) if total_files else 100.0
+                print(f"[site_runner] {ecosystem}/{site_id}: {processed}/{total_files} windows ({pct:.0f}%) done")
+
+    # Optional: log per-window metrics for distribution plots
+    if window_log_dir:
+        window_log_rows = []
+        for (theta_index, rotation_mode), window_results in window_results_by_combo.items():
+            for w in window_results:
+                window_log_rows.append({
+                    "ecosystem": ecosystem,
+                    "site": site_id,
+                    "theta_index": theta_index,
+                    "rotation_mode": rotation_mode,
+                    "subsample_index": w.get("subsample_index"),
+                    "subsample_mode": w.get("subsample_mode"),
+                    "subsample_label": w.get("subsample_label"),
+                    "window_start": w.get("window_start").isoformat() if w.get("window_start") else None,
+                    "is_day": w.get("is_day"),
+                    "kept_fraction": w.get("kept_fraction"),
+                    "ogive_stop_time_sec": w.get("ogive_stop_time_sec"),
+                    "effective_fs": w.get("effective_fs"),
+                    "target_fs": w.get("target_fs"),
+                    "F_CO2_ref": w.get("F_CO2_ref"),
+                    "F_CO2_deg": w.get("F_CO2_deg"),
+                    "F_CO2_raw": w.get("F_CO2_raw"),
+                    "F_LE_ref": w.get("F_LE_ref"),
+                    "F_LE_deg": w.get("F_LE_deg"),
+                    "F_LE_raw": w.get("F_LE_raw"),
+                    "F_H_ref": w.get("F_H_ref"),
+                    "F_H_deg": w.get("F_H_deg"),
+                    "F_H_raw": w.get("F_H_raw"),
+                    "res_CO2": w.get("res_CO2"),
+                    "res_LE": w.get("res_LE"),
+                    "res_H": w.get("res_H"),
+                })
+        if window_log_rows:
+            log_dir = Path(window_log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"{ecosystem}_{site_id}_windows_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
+            df_log = pd.DataFrame(window_log_rows)
+            df_log.to_csv(log_path, index=False)
 
     # Aggregate per theta
     for (theta_index, rotation_mode), window_results in window_results_by_combo.items():
@@ -226,7 +283,7 @@ def run_site(
             continue
 
         window_results.sort(key=lambda r: r["window_start"])
-        aggregated = aggregate_window_results(window_results)
+        aggregated = aggregate_window_results(window_results, lower_pct=outlier_lower_pct, upper_pct=outlier_upper_pct)
 
         if subsample_specs:
             theta_dict = theta_list[0].__dict__ if theta_list else {}
@@ -266,15 +323,30 @@ def run_site(
 
             kept_vals = [w.get("kept_fraction") for w in window_results if w.get("kept_fraction") is not None]
             if kept_vals:
-                aggregated["kept_fraction_mean"] = float(np.nanmean(kept_vals))
+                kept_arr = np.array(kept_vals, dtype=float)
+                aggregated["kept_fraction_mean"] = float(np.nanmean(kept_arr))
+                aggregated["kept_fraction_std"] = float(np.nanstd(kept_arr))
+                aggregated["kept_fraction_p10"] = float(np.nanpercentile(kept_arr, 10))
+                aggregated["kept_fraction_p50"] = float(np.nanmedian(kept_arr))
+                aggregated["kept_fraction_p90"] = float(np.nanpercentile(kept_arr, 90))
 
             stop_vals = [w.get("ogive_stop_time_sec") for w in window_results if w.get("ogive_stop_time_sec") is not None]
             if stop_vals:
-                aggregated["ogive_stop_time_sec_mean"] = float(np.nanmean(stop_vals))
+                stop_arr = np.array(stop_vals, dtype=float)
+                aggregated["ogive_stop_time_sec_mean"] = float(np.nanmean(stop_arr))
+                aggregated["ogive_stop_time_sec_std"] = float(np.nanstd(stop_arr))
+                aggregated["ogive_stop_time_sec_p10"] = float(np.nanpercentile(stop_arr, 10))
+                aggregated["ogive_stop_time_sec_p50"] = float(np.nanmedian(stop_arr))
+                aggregated["ogive_stop_time_sec_p90"] = float(np.nanpercentile(stop_arr, 90))
 
             eff_vals = [w.get("effective_fs") for w in window_results if w.get("effective_fs") is not None]
             if eff_vals:
-                aggregated["effective_fs_mean"] = float(np.nanmean(eff_vals))
+                eff_arr = np.array(eff_vals, dtype=float)
+                aggregated["effective_fs_mean"] = float(np.nanmean(eff_arr))
+                aggregated["effective_fs_std"] = float(np.nanstd(eff_arr))
+                aggregated["effective_fs_p10"] = float(np.nanpercentile(eff_arr, 10))
+                aggregated["effective_fs_p50"] = float(np.nanmedian(eff_arr))
+                aggregated["effective_fs_p90"] = float(np.nanpercentile(eff_arr, 90))
 
             target_vals = [w.get("target_fs") for w in window_results if w.get("target_fs") is not None]
             if target_vals:
@@ -282,4 +354,5 @@ def run_site(
 
         site_aggregated[(theta_index, rotation_mode)] = aggregated
 
+    print(f"[site_runner] {ecosystem}/{site_id}: aggregation complete for {len(window_results_by_combo)} combos")
     return site_aggregated
