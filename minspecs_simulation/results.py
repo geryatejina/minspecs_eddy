@@ -2,20 +2,37 @@
 results.py
 ----------
 
-Flux-focused aggregation:
-    - Bias (mean residual) and random error (std residual) for CO2, LE, H
-    - Day/night splits
-    - Cumulative bias over days, weeks, and full period
+Aggregation focused on:
+    - Regression stats (slope/intercept/r2) on 30-min window fluxes
+    - Regression stats on daily-mean fluxes
+    - Cumulative bias at month-end and full-period totals
 """
 
 from __future__ import annotations
 
-from typing import List, Dict
+from typing import List, Dict, Iterable, Tuple
 import numpy as np
 
 WINDOW_SECONDS = 1800.0  # 30-minute windows
 
-def _filter_outliers(window_results: List[Dict], lower_pct: float = 5.0, upper_pct: float = 95.0) -> List[Dict]:
+
+def _discover_fluxes(window_results: List[Dict]) -> List[str]:
+    fluxes = set()
+    for w in window_results:
+        for key in w.keys():
+            if key.startswith("F_") and key.endswith("_ref"):
+                flux = key[2:-4]
+                if f"F_{flux}_deg" in w:
+                    fluxes.add(flux)
+    return sorted(fluxes)
+
+
+def _filter_outliers(
+    window_results: List[Dict],
+    fluxes: Iterable[str],
+    lower_pct: float = 5.0,
+    upper_pct: float = 95.0,
+) -> List[Dict]:
     """
     Drop windows with extreme residuals to reduce skew in aggregation.
     A window is kept only if each flux residual is within [lower_pct, upper_pct] for that flux.
@@ -32,15 +49,19 @@ def _filter_outliers(window_results: List[Dict], lower_pct: float = 5.0, upper_p
         hi = np.nanpercentile(arr, upper_pct)
         return lo, hi
 
-    res_CO2 = [w.get("res_CO2") for w in window_results]
-    res_LE = [w.get("res_LE") for w in window_results]
-    res_H = [w.get("res_H") for w in window_results]
-
-    bounds = {
-        "res_CO2": pct_bounds(res_CO2),
-        "res_LE": pct_bounds(res_LE),
-        "res_H": pct_bounds(res_H),
-    }
+    bounds = {}
+    for flux in fluxes:
+        residuals = []
+        ref_key = f"F_{flux}_ref"
+        deg_key = f"F_{flux}_deg"
+        for w in window_results:
+            ref = w.get(ref_key)
+            deg = w.get(deg_key)
+            if ref is None or deg is None:
+                continue
+            if np.isfinite(ref) and np.isfinite(deg):
+                residuals.append(deg - ref)
+        bounds[flux] = pct_bounds(residuals)
 
     def within(val, bound):
         if bound is None or val is None or not np.isfinite(val):
@@ -50,11 +71,17 @@ def _filter_outliers(window_results: List[Dict], lower_pct: float = 5.0, upper_p
 
     filtered = []
     for w in window_results:
-        if (
-            within(w.get("res_CO2"), bounds["res_CO2"])
-            and within(w.get("res_LE"), bounds["res_LE"])
-            and within(w.get("res_H"), bounds["res_H"])
-        ):
+        keep = True
+        for flux in fluxes:
+            ref = w.get(f"F_{flux}_ref")
+            deg = w.get(f"F_{flux}_deg")
+            residual = None
+            if ref is not None and deg is not None:
+                residual = deg - ref
+            if not within(residual, bounds.get(flux)):
+                keep = False
+                break
+        if keep:
             filtered.append(w)
 
     # Avoid dropping everything; fall back if filtering was too aggressive
@@ -68,24 +95,10 @@ def _mean(values):
     return float(np.nanmean(arr))
 
 
-def _std(values):
-    arr = np.array(values, dtype=float)
-    if arr.size == 0:
-        return np.nan
-    return float(np.nanstd(arr, ddof=1))
-
-
 def _safe_rel_bias(bias, ref):
     if ref == 0 or not np.isfinite(ref) or not np.isfinite(bias):
         return np.nan
     return bias / abs(ref)
-
-
-def _safe_rel_error(err, ref):
-    """Relative magnitude of an error term against a reference mean."""
-    if ref == 0 or not np.isfinite(ref) or not np.isfinite(err):
-        return np.nan
-    return err / abs(ref)
 
 
 def _regression_stats(x_vals, y_vals):
@@ -109,16 +122,85 @@ def _regression_stats(x_vals, y_vals):
     return float(slope), float(intercept), float(r2)
 
 
+def _pair_series(window_results: List[Dict], flux: str) -> List[Tuple]:
+    pairs = []
+    ref_key = f"F_{flux}_ref"
+    deg_key = f"F_{flux}_deg"
+    for w in window_results:
+        ts = w.get("window_start")
+        ref = w.get(ref_key)
+        deg = w.get(deg_key)
+        if ts is None or ref is None or deg is None:
+            continue
+        # Keep only paired finite points to enforce aligned gaps.
+        if np.isfinite(ref) and np.isfinite(deg):
+            pairs.append((ts, float(ref), float(deg)))
+    return pairs
+
+
+def _daily_means(pairs: List[Tuple]) -> Tuple[List[float], List[float]]:
+    groups: Dict = {}
+    for ts, ref, deg in pairs:
+        if not hasattr(ts, "date"):
+            continue
+        day = ts.date()
+        if day not in groups:
+            groups[day] = {"ref": [], "deg": []}
+        groups[day]["ref"].append(ref)
+        groups[day]["deg"].append(deg)
+    daily_ref = []
+    daily_deg = []
+    for g in groups.values():
+        if g["ref"]:
+            daily_ref.append(_mean(g["ref"]))
+            daily_deg.append(_mean(g["deg"]))
+    return daily_ref, daily_deg
+
+
+def _cum_bias(pairs: List[Tuple]) -> Tuple[float, float]:
+    if not pairs:
+        return np.nan, np.nan
+    ref_sum = sum(ref * WINDOW_SECONDS for _, ref, _ in pairs)
+    deg_sum = sum(deg * WINDOW_SECONDS for _, _, deg in pairs)
+    bias = deg_sum - ref_sum
+    return bias, _safe_rel_bias(bias, ref_sum)
+
+
+def _monthly_bias_means(pairs: List[Tuple]) -> Tuple[float, float]:
+    if not pairs:
+        return np.nan, np.nan
+    groups: Dict = {}
+    for ts, ref, deg in pairs:
+        if not hasattr(ts, "year") or not hasattr(ts, "month"):
+            continue
+        key = (ts.year, ts.month)
+        if key not in groups:
+            groups[key] = {"ref": 0.0, "deg": 0.0}
+        groups[key]["ref"] += ref * WINDOW_SECONDS
+        groups[key]["deg"] += deg * WINDOW_SECONDS
+    biases = []
+    rel_biases = []
+    for g in groups.values():
+        bias = g["deg"] - g["ref"]
+        biases.append(bias)
+        rel_biases.append(_safe_rel_bias(bias, g["ref"]))
+    return _mean(biases), _mean(rel_biases)
+
+
 def aggregate_window_results(window_results: List[Dict], lower_pct: float = 5.0, upper_pct: float = 95.0) -> Dict:
     """
-    Aggregate flux metrics for one (site, theta, rotation_mode):
-        - Bias and random error (overall, day, night)
-        - Cumulative bias over days/weeks/full period
+    Aggregate metrics for one (site, theta, rotation_mode):
+        - Regression stats on window fluxes and daily means
+        - Cumulative bias over months and full period
     """
     if len(window_results) == 0:
         raise ValueError("No window results to aggregate.")
 
-    window_results = _filter_outliers(window_results, lower_pct=lower_pct, upper_pct=upper_pct)
+    fluxes = _discover_fluxes(window_results)
+    if not fluxes:
+        raise ValueError("No flux pairs found in window results.")
+
+    window_results = _filter_outliers(window_results, fluxes, lower_pct=lower_pct, upper_pct=upper_pct)
 
     site_id = window_results[0]["site_id"]
     theta_index = window_results[0]["theta_index"]
@@ -127,157 +209,33 @@ def aggregate_window_results(window_results: List[Dict], lower_pct: float = 5.0,
     agg = {
         "site_id": site_id,
         "theta_index": theta_index,
-        "n_windows": len(window_results),
-        "n_windows_day": sum(1 for w in window_results if bool(w.get("is_day"))),
-        "n_windows_night": sum(1 for w in window_results if w.get("is_day") is not None and not bool(w.get("is_day"))),
     }
     if rotation_mode is not None:
         agg["rotation_mode"] = rotation_mode
 
-    is_day = [bool(w.get("is_day")) for w in window_results]
-    night_mask = [not d for d in is_day]
+    for flux in fluxes:
+        pairs = _pair_series(window_results, flux)
+        ref_vals = [p[1] for p in pairs]
+        deg_vals = [p[2] for p in pairs]
 
-    def subset(vals, mask):
-        return [v for v, m in zip(vals, mask) if m]
+        slope, intercept, r2 = _regression_stats(ref_vals, deg_vals)
+        daily_ref, daily_deg = _daily_means(pairs)
+        slope_daily, intercept_daily, r2_daily = _regression_stats(daily_ref, daily_deg)
 
-    # Residuals and refs
-    res = {
-        "CO2": [w["res_CO2"] for w in window_results],
-        "LE": [w["res_LE"] for w in window_results],
-        "H": [w["res_H"] for w in window_results],
-    }
-    ref = {
-        "CO2": [w["F_CO2_ref"] for w in window_results],
-        "LE": [w["F_LE_ref"] for w in window_results],
-        "H": [w["F_H_ref"] for w in window_results],
-    }
-    deg = {
-        flux: [r + f_ref for r, f_ref in zip(res[flux], ref[flux])]
-        for flux in ["CO2", "LE", "H"]
-    }
+        period_bias, period_rel_bias = _cum_bias(pairs)
+        month_bias_mean, month_rel_bias_mean = _monthly_bias_means(pairs)
 
-    # Bias/random error overall and day/night
-    for flux in ["CO2", "LE", "H"]:
-        bias_all = _mean(res[flux])
-        rnd_all = _std(res[flux])
-        rel_bias_all = _safe_rel_bias(bias_all, _mean(ref[flux]))
-        rel_rnd_all = _safe_rel_error(rnd_all, _mean(ref[flux]))
+        agg[f"reg_slope_{flux}"] = slope
+        agg[f"reg_intercept_{flux}"] = intercept
+        agg[f"reg_r2_{flux}"] = r2
 
-        bias_day = _mean(subset(res[flux], is_day))
-        rnd_day = _std(subset(res[flux], is_day))
-        rel_bias_day = _safe_rel_bias(bias_day, _mean(subset(ref[flux], is_day)))
-        rel_rnd_day = _safe_rel_error(rnd_day, _mean(subset(ref[flux], is_day)))
+        agg[f"reg_slope_{flux}_daily"] = slope_daily
+        agg[f"reg_intercept_{flux}_daily"] = intercept_daily
+        agg[f"reg_r2_{flux}_daily"] = r2_daily
 
-        bias_night = _mean(subset(res[flux], night_mask))
-        rnd_night = _std(subset(res[flux], night_mask))
-        rel_bias_night = _safe_rel_bias(bias_night, _mean(subset(ref[flux], night_mask)))
-        rel_rnd_night = _safe_rel_error(rnd_night, _mean(subset(ref[flux], night_mask)))
-
-        slope_all, intercept_all, r2_all = _regression_stats(ref[flux], deg[flux])
-        slope_day, intercept_day, r2_day = _regression_stats(
-            subset(ref[flux], is_day), subset(deg[flux], is_day)
-        )
-        slope_night, intercept_night, r2_night = _regression_stats(
-            subset(ref[flux], night_mask), subset(deg[flux], night_mask)
-        )
-
-        agg[f"bias_{flux}"] = bias_all
-        agg[f"random_error_{flux}"] = rnd_all
-        agg[f"rel_bias_{flux}"] = rel_bias_all
-        agg[f"rel_random_error_{flux}"] = rel_rnd_all
-
-        agg[f"bias_{flux}_day"] = bias_day
-        agg[f"random_error_{flux}_day"] = rnd_day
-        agg[f"rel_bias_{flux}_day"] = rel_bias_day
-        agg[f"rel_random_error_{flux}_day"] = rel_rnd_day
-
-        agg[f"bias_{flux}_night"] = bias_night
-        agg[f"random_error_{flux}_night"] = rnd_night
-        agg[f"rel_bias_{flux}_night"] = rel_bias_night
-        agg[f"rel_random_error_{flux}_night"] = rel_rnd_night
-
-        agg[f"reg_slope_{flux}"] = slope_all
-        agg[f"reg_intercept_{flux}"] = intercept_all
-        agg[f"reg_r2_{flux}"] = r2_all
-
-        agg[f"reg_slope_{flux}_day"] = slope_day
-        agg[f"reg_intercept_{flux}_day"] = intercept_day
-        agg[f"reg_r2_{flux}_day"] = r2_day
-
-        agg[f"reg_slope_{flux}_night"] = slope_night
-        agg[f"reg_intercept_{flux}_night"] = intercept_night
-        agg[f"reg_r2_{flux}_night"] = r2_night
-
-    # Cumulative sums and biases
-    def accumulate(ref_key, deg_key, res_key, grouper):
-        groups = {}
-        for w in window_results:
-            g = grouper(w)
-            if g not in groups:
-                groups[g] = {"ref": 0.0, "deg": 0.0, "res2": 0.0}
-            groups[g]["ref"] += w[ref_key] * WINDOW_SECONDS
-            groups[g]["deg"] += w[deg_key] * WINDOW_SECONDS
-            groups[g]["res2"] += (w[res_key] * WINDOW_SECONDS) ** 2
-        return groups
-
-    def cum_bias_stats(groups):
-        biases = []
-        rel_biases = []
-        for g in groups.values():
-            bias = g["deg"] - g["ref"]
-            biases.append(bias)
-            rel_biases.append(_safe_rel_bias(bias, g["ref"]))
-        return _mean(biases), _mean(rel_biases)
-
-    for flux, ref_key, deg_key, res_key in [
-        ("CO2", "F_CO2_ref", "F_CO2_deg", "res_CO2"),
-        ("LE", "F_LE_ref", "F_LE_deg", "res_LE"),
-        ("H", "F_H_ref", "F_H_deg", "res_H"),
-    ]:
-        period = accumulate(ref_key, deg_key, res_key, lambda w: "all")["all"]
-        daily = accumulate(ref_key, deg_key, res_key, lambda w: w["window_start"].date())
-        weekly = accumulate(
-            ref_key,
-            deg_key,
-            res_key,
-            lambda w: (w["window_start"].isocalendar().year, w["window_start"].isocalendar().week),
-        )
-        monthly = accumulate(
-            ref_key,
-            deg_key,
-            res_key,
-            lambda w: (w["window_start"].year, w["window_start"].month),
-        )
-
-        pbias = period["deg"] - period["ref"]
-        prel = _safe_rel_bias(pbias, period["ref"])
-        prand = np.sqrt(period["res2"])
-
-        dbias_mean, drel_mean = cum_bias_stats(daily)
-        wbias_mean, wrel_mean = cum_bias_stats(weekly)
-        mbias_mean, mrel_mean = cum_bias_stats(monthly)
-
-        def avg_random(groups):
-            vals = []
-            for g in groups.values():
-                vals.append(np.sqrt(g["res2"]))
-            return _mean(vals)
-
-        drand_mean = avg_random(daily)
-        wrand_mean = avg_random(weekly)
-        mrand_mean = avg_random(monthly)
-
-        agg[f"cum_bias_{flux}_period"] = pbias
-        agg[f"cum_rel_bias_{flux}_period"] = prel
-        agg[f"cum_random_{flux}_period"] = prand
-        agg[f"cum_bias_{flux}_day_mean"] = dbias_mean
-        agg[f"cum_rel_bias_{flux}_day_mean"] = drel_mean
-        agg[f"cum_random_{flux}_day_mean"] = drand_mean
-        agg[f"cum_bias_{flux}_week_mean"] = wbias_mean
-        agg[f"cum_rel_bias_{flux}_week_mean"] = wrel_mean
-        agg[f"cum_random_{flux}_week_mean"] = wrand_mean
-        agg[f"cum_bias_{flux}_month_mean"] = mbias_mean
-        agg[f"cum_rel_bias_{flux}_month_mean"] = mrel_mean
-        agg[f"cum_random_{flux}_month_mean"] = mrand_mean
+        agg[f"cum_bias_{flux}_period"] = period_bias
+        agg[f"cum_rel_bias_{flux}_period"] = period_rel_bias
+        agg[f"cum_bias_{flux}_month_mean"] = month_bias_mean
+        agg[f"cum_rel_bias_{flux}_month_mean"] = month_rel_bias_mean
 
     return agg

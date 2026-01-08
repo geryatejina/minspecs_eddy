@@ -92,12 +92,16 @@ def load_ch4_arrays(path: Path):
     return arrays
 
 
-def window_id_from_path(path: Path) -> str:
+def window_id_from_path(path: Path):
     """
-    Fallback window identifier for sorting/logging. Uses the file stem to
-    avoid ICOS-specific timestamp parsing.
+    Window identifier for sorting/logging.
+    Attempts to parse a datetime from the file stem; falls back to the stem.
     """
-    return Path(path).stem
+    stem = Path(path).stem
+    ts = pd.to_datetime(stem, errors="coerce")
+    if not pd.isna(ts):
+        return ts.to_pydatetime()
+    return stem
 
 
 __all__ = [

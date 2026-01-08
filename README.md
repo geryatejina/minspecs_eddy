@@ -1,24 +1,33 @@
 # minspecs_eddy
 
 Power/precision trade-off simulations for eddy-covariance systems. Three experiment tracks:
-- CO₂/H₂O degradation sweep (baseline minspecs).
+- CO2/H2O degradation (Monte Carlo sampling or univariate sweeps).
 - Subsampling/scheduling strategies (power-saving modes, no sensor degradation by default).
-- Methane-only degradation sweep (separate CH₄ pipeline).
+- Methane-only degradation (Monte Carlo sampling or univariate sweeps).
 
 ## Data expectations
 - ICOS-style cached windows in `.npz` under an ecosystem/site hierarchy (e.g., `igbp_ENF/CH-Dav/*.npz`).
-- Point `data_root` in the scripts to your cache locations (`D:\data\ec\raw\ICOS_npz` for CO₂/H₂O, `D:\data\ec\raw\CH4` for methane in the examples).
+- Point `data_root` in the scripts to your cache locations (`D:\data\ec\raw\ICOS_npz` for CO2/H2O, `D:\data\ec\raw\CH4` for methane in the examples).
 
 ## How to run
 
-### CO₂/H₂O degradation sweep
-- Entry: `scripts/run_experiment.py`
+### CO2/H2O degradation (Monte Carlo)
+- Entry: `scripts/run_co2_montecarlo.py` (or `scripts/run_experiment.py`)
 - Edit `sites`, `theta_ranges`, `N_theta`, and `data_root` as needed.
 - Run:
   ```bash
-  python scripts/run_experiment.py
+  python scripts/run_co2_montecarlo.py
   ```
-- Output: `results.csv`
+- Output: `results_co2_montecarlo.csv`
+
+### CO2/H2O degradation (univariate sweeps)
+- Entry: `scripts/run_co2_sweep.py`
+- Edit `baseline_theta`, `sweep_map`, and `data_root` as needed.
+- Run:
+  ```bash
+  python scripts/run_co2_sweep.py
+  ```
+- Output: `results_co2_sweep.csv`
 
 ### Subsampling/scheduling experiment
 - Entry: `scripts/run_subsampling.py`
@@ -30,30 +39,39 @@ Power/precision trade-off simulations for eddy-covariance systems. Three experim
   ```
 - Output: `results_subsampling.csv`
 
-### Methane (CH₄) degradation sweep
-- Entry: `scripts/run_ch4_perf.py`
-- Configure `site_list`, `baseline_theta`, `sweep_map`, and `data_root` for your CH₄ cache.
+### Methane (CH4) degradation (Monte Carlo)
+- Entry: `scripts/run_ch4_montecarlo.py`
+- Configure `site_list`, `theta_ranges`, and `data_root` for your CH4 cache.
 - Run:
   ```bash
-  python scripts/run_ch4_perf.py
+  python scripts/run_ch4_montecarlo.py
   ```
-- Output: `results_ch4.csv`
+- Output: `results_ch4_montecarlo.csv`
+
+### Methane (CH4) degradation (univariate sweeps)
+- Entry: `scripts/run_ch4_sweep.py` (or `scripts/run_ch4_perf.py`)
+- Configure `site_list`, `baseline_theta`, `sweep_map`, and `data_root` for your CH4 cache.
+- Run:
+  ```bash
+  python scripts/run_ch4_sweep.py
+  ```
+- Output: `results_ch4_sweep.csv`
 
 ## Result structure
 - CSV rows are per-site per-configuration.
-- Metadata columns include ecosystem/site, theta/subsample identifiers, rotation mode, and window counts.
-- Metrics include flux biases, random errors, cumulative day/week/month stats (from `minspecs_simulation/results.py`).
+- Metadata columns include ecosystem/site, theta/subsample identifiers, and rotation mode.
+- Metrics include regression slope/intercept/R2 on 30-min windows and daily means, plus cumulative bias (monthly mean and full-period totals). Gaps are harmonized by requiring paired finite ref/deg values.
 
 ## Key modules
 - `minspecs_simulation/main.py`: orchestrators (`run_experiment`, `run_subsampling_experiment`).
 - `minspecs_simulation/site_runner.py`: per-site fan-out over windows and configurations.
-- `minspecs_simulation/window_processor.py`: per-window CO₂/H₂O engine (with subsampling hook).
+- `minspecs_simulation/window_processor.py`: per-window CO2/H2O engine (with subsampling hook).
 - `minspecs_simulation/ch4_runner.py`, `minspecs_simulation/ch4_window_processor.py`: methane path.
 - `minspecs_simulation/types.py`: theta and subsampling spec definitions.
-- `minspecs_simulation/results.py`: aggregation logic (bias, random error, cumulative day/week/month).
+- `minspecs_simulation/results.py`: aggregation logic (regressions and cumulative biases).
 - `minspecs_simulation/writer.py`: flatten to CSV.
 
 ## Notes
 - Subsampling is applied before any degradation to mimic scheduled acquisition; default theta for that path is ideal (no noise/lag).
-- Rotation modes default to `double` and `none` for CO₂/H₂O; methane path is independent.
+- Rotation modes default to `double` and `none` for CO2/H2O; methane path is independent.
 - For quick tests, use `max_files_per_site`/`max_files` in the scripts to limit windows.

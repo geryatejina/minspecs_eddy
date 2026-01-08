@@ -1,13 +1,14 @@
 import argparse
 import os
 from pathlib import Path
+
 from minspecs_simulation.main import run_experiment
 from minspecs_simulation.writer import write_results_to_csv
 from minspecs_simulation.window_processor import set_empty_log
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run CO2/H2O experiment for BE-Lon.")
+    parser = argparse.ArgumentParser(description="Run CO2/H2O Monte Carlo experiment.")
     parser.add_argument(
         "--empty-log",
         help="Log empty/NaN arrays: 'stderr', 'stdout', or a file path.",
@@ -17,7 +18,11 @@ if __name__ == "__main__":
         os.environ["MINSPECS_EMPTY_LOG"] = args.empty_log
         set_empty_log(args.empty_log)
 
-    sites = [("igbp_CRO", "BE-Lon")]
+    sites = [
+        ("igbp_ENF", "CH-Dav"),
+        ("igbp_GRA", "BE-Dor"),
+        ("igbp_WET", "FI-Sii"),
+    ]
 
     theta_ranges = {
         "fs_sonic": (5, 20),
@@ -42,8 +47,8 @@ if __name__ == "__main__":
         data_root=Path(r"D:\data\ec\raw\ICOS_npz"),
         file_pattern="*.npz",
         max_workers=8,
-        max_files_per_site=None,
+        max_files_per_site=1440,  # ~1 month (30 days * 48 half-hour windows)
         theta_seed=42,
     )
 
-    write_results_to_csv(results, "results_belon.csv")
+    write_results_to_csv(results, "results_co2_montecarlo.csv")

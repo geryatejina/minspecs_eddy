@@ -1,8 +1,11 @@
+import argparse
+import os
 from pathlib import Path
 
 from minspecs_simulation.main import run_subsampling_experiment
 from minspecs_simulation.types import SubsampleSpec, SubsampleMode
 from minspecs_simulation.writer import write_results_to_csv
+from minspecs_simulation.window_processor import set_empty_log
 
 
 def build_subsample_specs():
@@ -36,6 +39,16 @@ def build_subsample_specs():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run subsampling experiment.")
+    parser.add_argument(
+        "--empty-log",
+        help="Log empty/NaN arrays: 'stderr', 'stdout', or a file path.",
+    )
+    args = parser.parse_args()
+    if args.empty_log:
+        os.environ["MINSPECS_EMPTY_LOG"] = args.empty_log
+        set_empty_log(args.empty_log)
+
     sites = [
         ("igbp_CRO", "BE-Lon"),
         ("igbp_CRO", "DE-Geb"),

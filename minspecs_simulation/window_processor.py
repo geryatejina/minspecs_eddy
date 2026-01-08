@@ -15,6 +15,9 @@ Pipeline:
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
+import os
+import sys
 from math import hypot
 
 import numpy as np
@@ -43,6 +46,34 @@ else:
     _lowpass_first_order_numba = None
 
 BASE_RAW_FS = 20.0  # ICOS raw sampling frequency (Hz)
+EMPTY_LOG = os.getenv("MINSPECS_EMPTY_LOG")
+
+
+def set_empty_log(value):
+    global EMPTY_LOG
+    EMPTY_LOG = value
+
+
+def _log_empty(arr, name, stage, path, theta_index=None, rotation_mode=None):
+    if not EMPTY_LOG:
+        return
+    arr = np.asarray(arr)
+    size = int(arr.size)
+    finite = int(np.isfinite(arr).sum()) if size else 0
+    if size > 0 and finite > 0:
+        return
+    msg = (
+        f"{datetime.now().isoformat()} stage={stage} path={path} name={name} "
+        f"size={size} finite={finite} theta_index={theta_index} rotation_mode={rotation_mode}\n"
+    )
+    dest = EMPTY_LOG.strip().lower()
+    if dest in ("1", "true", "stderr"):
+        print(msg.rstrip(), file=sys.stderr)
+    elif dest == "stdout":
+        print(msg.rstrip(), file=sys.stdout)
+    else:
+        with open(EMPTY_LOG, "a", encoding="ascii") as handle:
+            handle.write(msg)
 
 
 # =============================================================
@@ -500,7 +531,8 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
                              window_start, rotation_mode, lag_samples, ecosystem,
                              subsample_spec: SubsampleSpec | None = None,
                              subsample_index: int | None = None,
-                             seed=None):
+                             seed=None,
+                             path: str | None = None):
     """
         arrays = df_to_arrays(df), containing numpy arrays:
             u, v, w, Ts, rho_CO2, rho_H2O, T_cell, P_cell
@@ -542,6 +574,10 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     # 0. Double rotation on reference wind (tilt correction)
     # ============================================================
 
+    _log_empty(u, "u", "double_rotate/ref", path, theta_index, rotation_mode)
+    _log_empty(v, "v", "double_rotate/ref", path, theta_index, rotation_mode)
+    _log_empty(w, "w", "double_rotate/ref", path, theta_index, rotation_mode)
+
     u_ref_rot, v_ref_rot, w_ref_rot, alpha_ref, beta_ref = double_rotate(u, v, w)
 
     # ============================================================
@@ -558,6 +594,8 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     F_CO2_ref, F_LE_ref, F_H_ref = compute_fluxes(
         w_ref_rot, Ts, mr_CO2_ref, mr_H2O_ref
     )
+    _log_empty(T_cell_lag_ref, "T_cell_lag_ref", "mean_air_properties/ref", path, theta_index, rotation_mode)
+    _log_empty(P_cell_lag_ref, "P_cell_lag_ref", "mean_air_properties/ref", path, theta_index, rotation_mode)
     mol_density_ref, mass_density_ref = mean_air_properties(T_cell_lag_ref, P_cell_lag_ref)
 
     # ------------------------------------------------------------
@@ -620,6 +658,7 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
 
     Tcell_n = add_gaussian_noise(T_cell_lag, theta.sigma_Tcell_noise, rng)
 
+    _log_empty(Tcell_n, "Tcell_n", "temp_sensitivity/deg", path, theta_index, rotation_mode)
     dT = Tcell_n - np.nanmean(Tcell_n)
     rhoC_g = rhoC_n * (1 + theta.k_CO2_Tsens * dT)
     rhoW_g = rhoW_n * (1 + theta.k_H2O_Tsens * dT)
@@ -663,6 +702,7 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
         w_deg_for_flux = w_d
         alpha_deg = beta_deg = 0.0
 
+    _log_empty(w_deg_for_flux, "w_deg_for_flux", "w_mean_deg", path, theta_index, rotation_mode)
     w_mean_deg = float(np.nanmean(w_deg_for_flux))
 
     # ============================================================
@@ -672,6 +712,8 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
     F_CO2_raw, F_LE_raw, F_H_raw = compute_fluxes(
         w_d, Ts_d, mr_CO2_deg, mr_H2O_deg
     )
+    _log_empty(Tcell_d, "Tcell_d", "mean_air_properties/deg", path, theta_index, rotation_mode)
+    _log_empty(Pcell_d, "Pcell_d", "mean_air_properties/deg", path, theta_index, rotation_mode)
     mol_density_deg, mass_density_deg = mean_air_properties(Tcell_d, Pcell_d)
 
     if rotation_mode == "double":
@@ -770,4 +812,5 @@ def process_single_window(path, arrays, theta, site_id, theta_index, rotation_mo
         ecosystem=ecosystem,
         subsample_spec=subsample_spec,
         subsample_index=subsample_index,
+        path=str(path),
     )

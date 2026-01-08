@@ -19,10 +19,8 @@ if __name__ == "__main__":
         os.environ["MINSPECS_EMPTY_LOG"] = args.empty_log
         set_empty_log(args.empty_log)
 
-    # Example configuration for methane-only QCL degradation sweeps
-    site_list = ["BE-Lon"]  # adjust to your CH4 dataset site IDs
+    site_list = ["BE-Lon"]
 
-    # Ideal/baseline theta (no degradation)
     baseline_theta = MethaneTheta(
         f_eff=20.0,
         tau=0.02,
@@ -32,7 +30,6 @@ if __name__ == "__main__":
         sigma_lag=0.0,
     )
 
-    # One-at-a-time sweeps across the requested ranges
     sweep_map = {
         "f_eff": [1.0, 5.0, 10.0, 20.0],
         "tau": [0.02, 0.1, 0.5, 1.0],
@@ -46,7 +43,7 @@ if __name__ == "__main__":
         site_list=site_list,
         baseline_theta=baseline_theta,
         sweep_map=sweep_map,
-        data_root=Path(r"D:\data\ec\raw\CH4"),  # point to CH4 data root
+        data_root=Path(r"D:\data\ec\raw\CH4"),
         file_pattern="*.npz",
         max_files_per_site=None,
         max_workers=8,
@@ -54,4 +51,4 @@ if __name__ == "__main__":
         ecosystem_label="CH4",
     )
 
-    write_results_to_csv(results, "results_ch4.csv")
+    write_results_to_csv(results, "results_ch4_sweep.csv")

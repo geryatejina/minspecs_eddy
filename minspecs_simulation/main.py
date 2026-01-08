@@ -12,8 +12,9 @@ High-level orchestration of the minspecs_eddy simulation.
 
 from __future__ import annotations
 from pathlib import Path
+from typing import Sequence
 
-from .sampling import sample_thetas
+from .sampling import sample_thetas, build_theta_plan
 from .site_runner import run_site
 from .io_icos import ecosystem_sites
 from .types import Theta, SubsampleSpec
@@ -39,6 +40,8 @@ def run_experiment(
     ecosystem_site_list=None,
     theta_ranges: dict = None,
     N_theta: int = 10,
+    baseline_theta: Theta | None = None,
+    sweep_map: dict[str, Sequence[float]] | None = None,
     rotation_modes: list[str] | tuple[str, ...] = ("double", "none"),
     data_root: Path = None,
     max_workers: int | None = None,
@@ -57,7 +60,11 @@ def run_experiment(
     theta_ranges : dict
         dict of parameter ranges, e.g. {"fs_sonic": (5,20), ...}
     N_theta : int
-        number of theta samples to generate
+        number of theta samples to generate (Monte Carlo)
+    baseline_theta : Theta or None
+        baseline theta for univariate sweeps
+    sweep_map : dict or None
+        if provided, run univariate sweeps instead of Monte Carlo sampling
     rotation_modes : list[str] or tuple[str, ...]
         Discrete processing modes (e.g., ["double", "none"] for rotated vs non-rotated with correction)
     data_root : Path
@@ -95,9 +102,22 @@ def run_experiment(
             print(f"   - {eco}/{site}")
 
 
-    # --- sample theta values ---
-    print(f"[main] Sampling {N_theta} theta values...")
-    theta_list = sample_thetas(N_theta, theta_ranges, seed=theta_seed)
+    # --- build theta list ---
+    if sweep_map and theta_ranges:
+        raise ValueError("Provide either sweep_map or theta_ranges (not both).")
+    if sweep_map:
+        if baseline_theta is None:
+            raise ValueError("baseline_theta must be provided when using sweep_map.")
+        theta_plan = build_theta_plan(baseline_theta, sweep_map)
+        theta_list = [entry[0] for entry in theta_plan]
+        sweep_meta = {idx: (param, value) for idx, (_, param, value) in enumerate(theta_plan)}
+        print(f"[main] Building sweep plan: {len(theta_list)} theta variants...")
+    else:
+        if theta_ranges is None:
+            raise ValueError("theta_ranges must be provided for Monte Carlo runs.")
+        print(f"[main] Sampling {N_theta} theta values...")
+        theta_list = sample_thetas(N_theta, theta_ranges, seed=theta_seed)
+        sweep_meta = None
 
     experiment_results = {}
     rotation_modes = list(rotation_modes)
@@ -190,6 +210,12 @@ def run_subsampling_experiment(
             outlier_upper_pct=outlier_upper_pct,
             window_log_dir=window_log_dir,
         )
+
+        if sweep_meta:
+            for (theta_index, _rotation_mode), metrics in site_results.items():
+                param, value = sweep_meta.get(theta_index, (None, None))
+                metrics["sweep_param"] = param
+                metrics["sweep_value"] = value
 
         experiment_results[(ecosystem, site)] = site_results
         print(f"[main] Completed site: {ecosystem}/{site}")

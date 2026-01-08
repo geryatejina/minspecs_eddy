@@ -364,37 +364,6 @@ def run_site(
                 if meta_key in first:
                     aggregated[meta_key] = first[meta_key]
 
-            kept_vals = [w.get("kept_fraction") for w in window_results if w.get("kept_fraction") is not None]
-            if kept_vals:
-                kept_arr = np.array(kept_vals, dtype=float)
-                aggregated["kept_fraction_mean"] = float(np.nanmean(kept_arr))
-                aggregated["kept_fraction_std"] = float(np.nanstd(kept_arr))
-                aggregated["kept_fraction_p10"] = float(np.nanpercentile(kept_arr, 10))
-                aggregated["kept_fraction_p50"] = float(np.nanmedian(kept_arr))
-                aggregated["kept_fraction_p90"] = float(np.nanpercentile(kept_arr, 90))
-
-            stop_vals = [w.get("ogive_stop_time_sec") for w in window_results if w.get("ogive_stop_time_sec") is not None]
-            if stop_vals:
-                stop_arr = np.array(stop_vals, dtype=float)
-                aggregated["ogive_stop_time_sec_mean"] = float(np.nanmean(stop_arr))
-                aggregated["ogive_stop_time_sec_std"] = float(np.nanstd(stop_arr))
-                aggregated["ogive_stop_time_sec_p10"] = float(np.nanpercentile(stop_arr, 10))
-                aggregated["ogive_stop_time_sec_p50"] = float(np.nanmedian(stop_arr))
-                aggregated["ogive_stop_time_sec_p90"] = float(np.nanpercentile(stop_arr, 90))
-
-            eff_vals = [w.get("effective_fs") for w in window_results if w.get("effective_fs") is not None]
-            if eff_vals:
-                eff_arr = np.array(eff_vals, dtype=float)
-                aggregated["effective_fs_mean"] = float(np.nanmean(eff_arr))
-                aggregated["effective_fs_std"] = float(np.nanstd(eff_arr))
-                aggregated["effective_fs_p10"] = float(np.nanpercentile(eff_arr, 10))
-                aggregated["effective_fs_p50"] = float(np.nanmedian(eff_arr))
-                aggregated["effective_fs_p90"] = float(np.nanpercentile(eff_arr, 90))
-
-            target_vals = [w.get("target_fs") for w in window_results if w.get("target_fs") is not None]
-            if target_vals:
-                aggregated["target_fs_mean"] = float(np.nanmean(target_vals))
-
         site_aggregated[(theta_index, rotation_mode)] = aggregated
 
     print(f"[site_runner] {ecosystem}/{site_id}: aggregation complete for {len(window_results_by_combo)} combos")

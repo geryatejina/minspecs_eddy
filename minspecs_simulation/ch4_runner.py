@@ -16,34 +16,14 @@ from .ch4_types import MethaneTheta
 from .ch4_io import iter_ch4_files, load_ch4_arrays
 from .ch4_window_processor import process_ch4_window
 from .results import aggregate_window_results
+from .sampling import build_theta_plan, sample_thetas
 
 
 ThetaPlanEntry = Tuple[MethaneTheta, str | None, float | None]
 
 
-def build_theta_plan(
-    baseline: MethaneTheta,
-    sweeps: dict[str, Sequence[float]] | None = None,
-) -> List[ThetaPlanEntry]:
-    """
-    Construct a list of MethaneTheta variants for univariate sweeps.
-
-    The first entry is the baseline (no sweep). Each subsequent entry
-    changes exactly one parameter to a provided value.
-    """
-    plan: List[ThetaPlanEntry] = [(baseline, None, None)]
-    if not sweeps:
-        return plan
-
-    base_dict = baseline.__dict__
-    for param, values in sweeps.items():
-        if param not in base_dict:
-            raise KeyError(f"Unknown MethaneTheta parameter: {param}")
-        for val in values:
-            theta_kwargs = dict(base_dict)
-            theta_kwargs[param] = val
-            plan.append((MethaneTheta(**theta_kwargs), param, val))
-    return plan
+def _plan_from_samples(theta_list: List[MethaneTheta]) -> List[ThetaPlanEntry]:
+    return [(theta, None, None) for theta in theta_list]
 
 
 def _process_ch4_file(path: Path, theta_plan: List[ThetaPlanEntry], site_id: str, f_raw: float):
@@ -100,7 +80,9 @@ def run_ch4_site(
     for theta_index, window_results in window_results_by_theta.items():
         if not window_results:
             continue
-        window_results.sort(key=lambda r: r["window_start"])
+        window_results.sort(
+            key=lambda r: (0, r["window_start"]) if hasattr(r.get("window_start"), "date") else (1, str(r.get("window_start")))
+        )
         agg = aggregate_window_results(window_results)
 
         theta, sweep_param, sweep_value = theta_plan[theta_index]
@@ -117,8 +99,11 @@ def run_ch4_site(
 
 def run_ch4_experiment(
     site_list: Sequence[str],
-    baseline_theta: MethaneTheta,
-    sweep_map: dict[str, Sequence[float]] | None,
+    baseline_theta: MethaneTheta | None = None,
+    sweep_map: dict[str, Sequence[float]] | None = None,
+    theta_ranges: dict[str, tuple[float, float]] | None = None,
+    N_theta: int = 10,
+    theta_seed: int | None = None,
     data_root: Path,
     file_pattern: str = "*.npz",
     max_files_per_site: Optional[int] = None,
@@ -128,12 +113,24 @@ def run_ch4_experiment(
 ):
     """
     Run methane-only experiment across multiple sites.
+    Either provide sweep_map (with baseline_theta) for univariate sweeps,
+    or theta_ranges for Monte Carlo sampling.
 
     Returns
     -------
     dict: {(ecosystem_label, site): {theta_index: aggregated_metrics}}
     """
-    theta_plan = build_theta_plan(baseline_theta, sweep_map)
+    if sweep_map and theta_ranges:
+        raise ValueError("Provide either sweep_map or theta_ranges (not both).")
+    if sweep_map:
+        if baseline_theta is None:
+            raise ValueError("baseline_theta must be provided when using sweep_map.")
+        theta_plan = build_theta_plan(baseline_theta, sweep_map)
+    elif theta_ranges:
+        theta_list = sample_thetas(N_theta, theta_ranges, seed=theta_seed, cls=MethaneTheta)
+        theta_plan = _plan_from_samples(theta_list)
+    else:
+        raise ValueError("Either sweep_map or theta_ranges must be provided for CH4 runs.")
 
     experiment_results: Dict[Tuple[str, str], Dict] = {}
     for site in site_list:
@@ -154,7 +151,6 @@ def run_ch4_experiment(
 
 
 __all__ = [
-    "build_theta_plan",
     "run_ch4_site",
     "run_ch4_experiment",
 ]
