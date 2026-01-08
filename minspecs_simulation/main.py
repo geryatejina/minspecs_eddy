@@ -49,6 +49,7 @@ def run_experiment(
     file_pattern: str = "*.npz",
     theta_seed: int | None = None,
     skip_map: dict | None = None,
+    window_log_dir: Path | None = None,
 ):    
     """
     Run the entire experiment across all sites.
@@ -79,6 +80,8 @@ def run_experiment(
         RNG seed for theta sampling (for reproducibility/resume)
     skip_map : dict or None
         optional mapping {(ecosystem, site): set(theta_index)} to skip already processed combos
+    window_log_dir : Path or None
+        if provided, write per-window logs into this directory
 
     Returns
     -------
@@ -136,6 +139,7 @@ def run_experiment(
             max_files=max_files_per_site,
             file_pattern=file_pattern,
             skip_set=(skip_map or {}).get((ecosystem, site)),
+            window_log_dir=window_log_dir,
         )
 
         experiment_results[(ecosystem, site)] = site_results

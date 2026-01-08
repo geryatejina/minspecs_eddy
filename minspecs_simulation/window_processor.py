@@ -42,8 +42,40 @@ if _nb is not None:
         for i in range(1, len(x)):
             y[i] = a * y[i - 1] + one_minus_a * x[i]
         return y
+
+    @_nb.njit(cache=True)
+    def _lowpass_first_order_numba_nan(x, a):
+        n = len(x)
+        y = np.empty_like(x, dtype=np.float64)
+        if n == 0:
+            return y
+        first = -1
+        for i in range(n):
+            if np.isfinite(x[i]):
+                first = i
+                break
+        if first == -1:
+            for i in range(n):
+                y[i] = np.nan
+            return y
+        for i in range(first):
+            y[i] = np.nan
+        y[first] = x[first]
+        one_minus_a = 1.0 - a
+        for i in range(first + 1, n):
+            xi = x[i]
+            if np.isfinite(xi):
+                prev = y[i - 1]
+                if np.isfinite(prev):
+                    y[i] = a * prev + one_minus_a * xi
+                else:
+                    y[i] = xi
+            else:
+                y[i] = np.nan
+        return y
 else:
     _lowpass_first_order_numba = None
+    _lowpass_first_order_numba_nan = None
 
 BASE_RAW_FS = 20.0  # ICOS raw sampling frequency (Hz)
 EMPTY_LOG = os.getenv("MINSPECS_EMPTY_LOG")
@@ -439,17 +471,37 @@ def lowpass_first_order(x, tau, dt):
         return x.copy()
 
     a = np.exp(-dt / tau)
+    x = np.asarray(x, dtype=float)
     if _lowpass_first_order_numba is not None:
         # Ensure contiguous float64 for numba fast path
         x_f64 = np.ascontiguousarray(x, dtype=np.float64)
+        if np.isnan(x_f64).any():
+            return _lowpass_first_order_numba_nan(x_f64, a)
         return _lowpass_first_order_numba(x_f64, a)
 
     y = np.empty_like(x, dtype=float)
-    y[0] = x[0]
+    if x.size == 0:
+        return y
+
+    finite = np.isfinite(x)
+    if not finite.any():
+        return np.full_like(x, np.nan)
+
+    first = int(np.argmax(finite))
+    y[:first] = np.nan
+    y[first] = x[first]
     one_minus_a = 1.0 - a
 
-    for i in range(1, len(x)):
-        y[i] = a * y[i-1] + one_minus_a * x[i]
+    for i in range(first + 1, len(x)):
+        xi = x[i]
+        if not np.isfinite(xi):
+            y[i] = np.nan
+            continue
+        prev = y[i - 1]
+        if not np.isfinite(prev):
+            y[i] = xi
+        else:
+            y[i] = a * prev + one_minus_a * xi
 
     return y
 
@@ -789,6 +841,299 @@ def process_window_for_theta(arrays, theta, site_id, theta_index,
 
 
 # =============================================================
+# Reference branch (shared across thetas)
+# =============================================================
+
+def compute_reference_metrics(arrays, lag_samples):
+    """
+    Compute reference (undegraded) fluxes and air properties.
+    Returns a dict with lagged cell arrays and scaled reference quantities.
+    """
+    u       = arrays["u"]
+    v       = arrays["v"]
+    w       = arrays["w"]
+    Ts      = arrays["Ts"]
+    rho_CO2 = arrays["rho_CO2"]
+    rho_H2O = arrays["rho_H2O"]
+    T_cell  = arrays["T_cell"]
+    P_cell  = arrays["P_cell"]
+
+    rho_CO2_lag_ref = apply_integer_lag(rho_CO2, lag_samples)
+    rho_H2O_lag_ref = apply_integer_lag(rho_H2O, lag_samples)
+    T_cell_lag_ref  = apply_integer_lag(T_cell, lag_samples)
+    P_cell_lag_ref  = apply_integer_lag(P_cell, lag_samples)
+
+    u_ref_rot, v_ref_rot, w_ref_rot, _alpha_ref, _beta_ref = double_rotate(u, v, w)
+
+    mr_CO2_ref = density_to_mr(rho_CO2_lag_ref * 1e-3, T_cell_lag_ref, P_cell_lag_ref)  # mmol/m3 -> mol/m3
+    mr_H2O_ref = density_to_mr(rho_H2O_lag_ref * 1e-3, T_cell_lag_ref, P_cell_lag_ref)
+
+    F_CO2_ref, F_LE_ref, F_H_ref = compute_fluxes(
+        w_ref_rot, Ts, mr_CO2_ref, mr_H2O_ref
+    )
+    mol_density_ref, mass_density_ref = mean_air_properties(T_cell_lag_ref, P_cell_lag_ref)
+
+    return {
+        "F_CO2_ref": F_CO2_ref,
+        "F_LE_ref": F_LE_ref,
+        "F_H_ref": F_H_ref,
+        "mol_density_ref": mol_density_ref,
+        "mass_density_ref": mass_density_ref,
+        "T_cell_lag_ref": T_cell_lag_ref,
+        "P_cell_lag_ref": P_cell_lag_ref,
+    }
+
+
+# =============================================================
+# Full engine: process_window_for_theta_multi
+# =============================================================
+
+def process_window_for_theta_multi(arrays, theta, site_id, theta_index,
+                                   window_start, rotation_modes, lag_samples, ecosystem,
+                                   subsample_spec: SubsampleSpec | None = None,
+                                   subsample_index: int | None = None,
+                                   seed=None,
+                                   reference=None,
+                                   path: str | None = None):
+    """
+        Like process_window_for_theta, but computes all rotation modes in one pass.
+        Returns a list of per-rotation-mode result dicts.
+    """
+    rotation_modes = list(rotation_modes) if rotation_modes is not None else []
+    if not rotation_modes:
+        raise ValueError("rotation_modes must be provided.")
+    for rm in rotation_modes:
+        if rm not in ("double", "none"):
+            raise ValueError(f"Unknown rotation_mode: {rm}")
+
+    rng = np.random.default_rng(seed)
+    f_raw = BASE_RAW_FS               # ICOS raw sampling frequency
+    dt = 1.0 / f_raw
+
+    # ------------------------------------------------------------
+    # Unpack input arrays
+    # ------------------------------------------------------------
+
+    u       = arrays["u"]
+    v       = arrays["v"]
+    w       = arrays["w"]
+    Ts      = arrays["Ts"]
+    rho_CO2 = arrays["rho_CO2"]
+    rho_H2O = arrays["rho_H2O"]
+    T_cell  = arrays["T_cell"]
+    P_cell  = arrays["P_cell"]
+
+    # ============================================================
+    # 0. Reference branch (shared across thetas)
+    # ============================================================
+    for rotation_mode in rotation_modes:
+        _log_empty(u, "u", "double_rotate/ref", path, theta_index, rotation_mode)
+        _log_empty(v, "v", "double_rotate/ref", path, theta_index, rotation_mode)
+        _log_empty(w, "w", "double_rotate/ref", path, theta_index, rotation_mode)
+
+    reference = reference or compute_reference_metrics(arrays, lag_samples)
+    F_CO2_ref = reference["F_CO2_ref"]
+    F_LE_ref = reference["F_LE_ref"]
+    F_H_ref = reference["F_H_ref"]
+    mol_density_ref = reference["mol_density_ref"]
+    mass_density_ref = reference["mass_density_ref"]
+    T_cell_lag_ref = reference["T_cell_lag_ref"]
+    P_cell_lag_ref = reference["P_cell_lag_ref"]
+
+    for rotation_mode in rotation_modes:
+        _log_empty(T_cell_lag_ref, "T_cell_lag_ref", "mean_air_properties/ref", path, theta_index, rotation_mode)
+        _log_empty(P_cell_lag_ref, "P_cell_lag_ref", "mean_air_properties/ref", path, theta_index, rotation_mode)
+
+    # ------------------------------------------------------------
+    # Subsampling (applied before any processing of degraded branch)
+    # ------------------------------------------------------------
+    arrays_deg = arrays
+    subsample_meta = {}
+    f_eff = f_raw
+    if subsample_spec is not None:
+        arrays_deg, f_eff, subsample_meta = apply_subsampling(
+            arrays, subsample_spec, window_start, ecosystem, site_id, base_fs=f_raw
+        )
+
+    lag_samples_eff = lag_samples
+    if subsample_spec is not None and f_eff > 0:
+        lag_samples_eff = int(round(lag_samples * (f_eff / f_raw)))
+
+    dt = 1.0 / f_eff if f_eff > 0 else dt
+
+    u       = arrays_deg["u"]
+    v       = arrays_deg["v"]
+    w       = arrays_deg["w"]
+    Ts      = arrays_deg["Ts"]
+    rho_CO2 = arrays_deg["rho_CO2"]
+    rho_H2O = arrays_deg["rho_H2O"]
+    T_cell  = arrays_deg["T_cell"]
+    P_cell  = arrays_deg["P_cell"]
+
+    rho_CO2_lag = apply_integer_lag(rho_CO2, lag_samples_eff)
+    rho_H2O_lag = apply_integer_lag(rho_H2O, lag_samples_eff)
+    T_cell_lag  = apply_integer_lag(T_cell, lag_samples_eff)
+    P_cell_lag  = apply_integer_lag(P_cell, lag_samples_eff)
+
+    # ============================================================
+    # 3. Sonic degradations
+    # ============================================================
+
+    u_f  = lowpass_first_order(u,  theta.tau_sonic, dt)
+    v_f  = lowpass_first_order(v,  theta.tau_sonic, dt)
+    w_f  = lowpass_first_order(w,  theta.tau_sonic, dt)
+    Ts_f = lowpass_first_order(Ts, theta.tau_sonic, dt)
+
+    w_n  = add_gaussian_noise(w_f,  theta.sigma_w_noise,  rng)
+    Ts_n = add_gaussian_noise(Ts_f, theta.sigma_Ts_noise, rng)
+
+    u_d  = u_f
+    v_d  = v_f
+    w_d  = w_n
+    Ts_d = Ts_n
+
+    # ============================================================
+    # 4. IRGA degradations (densities + T_cell)
+    # ============================================================
+
+    rhoC_f = lowpass_first_order(rho_CO2_lag, theta.tau_irga, dt)
+    rhoW_f = lowpass_first_order(rho_H2O_lag, theta.tau_irga, dt)
+
+    rhoC_n = add_gaussian_noise(rhoC_f, theta.sigma_CO2dens_noise, rng)
+    rhoW_n = add_gaussian_noise(rhoW_f, theta.sigma_H2Odens_noise, rng)
+
+    Tcell_n = add_gaussian_noise(T_cell_lag, theta.sigma_Tcell_noise, rng)
+
+    for rotation_mode in rotation_modes:
+        _log_empty(Tcell_n, "Tcell_n", "temp_sensitivity/deg", path, theta_index, rotation_mode)
+    dT = Tcell_n - np.nanmean(Tcell_n)
+    rhoC_g = rhoC_n * (1 + theta.k_CO2_Tsens * dT)
+    rhoW_g = rhoW_n * (1 + theta.k_H2O_Tsens * dT)
+
+    # Common lag jitter applied to analyzer channels (densities and T_cell)
+    if theta.sigma_lag_jitter > 0:
+        jitter_seconds = rng.normal(loc=0.0, scale=theta.sigma_lag_jitter)
+        delay_samples = jitter_seconds * f_eff
+        rhoC_j = apply_lag_jitter(rhoC_g, f_eff, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
+        rhoW_j = apply_lag_jitter(rhoW_g, f_eff, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
+        Tcell_j = apply_lag_jitter(Tcell_n, f_eff, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
+        Pcell_j = apply_lag_jitter(P_cell, f_eff, theta.sigma_lag_jitter, rng, delay_samples=delay_samples)
+    else:
+        rhoC_j = rhoC_g
+        rhoW_j = rhoW_g
+        Tcell_j = Tcell_n
+        Pcell_j = P_cell
+
+    rhoC_d = rhoC_j
+    rhoW_d = rhoW_j
+    Tcell_d = Tcell_j
+    Pcell_d = Pcell_j
+
+    # ============================================================
+    # 5. Recompute mixing ratios AFTER degradation
+    # ============================================================
+
+    mr_CO2_deg = density_to_mr(rhoC_d * 1e-3, Tcell_d, Pcell_d)
+    mr_H2O_deg = density_to_mr(rhoW_d * 1e-3, Tcell_d, Pcell_d)
+
+    # ============================================================
+    # 6. Degraded fluxes (raw, no rotation)
+    # ============================================================
+
+    F_CO2_raw, F_LE_raw, F_H_raw = compute_fluxes(
+        w_d, Ts_d, mr_CO2_deg, mr_H2O_deg
+    )
+    for rotation_mode in rotation_modes:
+        _log_empty(Tcell_d, "Tcell_d", "mean_air_properties/deg", path, theta_index, rotation_mode)
+        _log_empty(Pcell_d, "Pcell_d", "mean_air_properties/deg", path, theta_index, rotation_mode)
+    mol_density_deg, mass_density_deg = mean_air_properties(Tcell_d, Pcell_d)
+
+    # ============================================================
+    # 7. Package all metrics together (flux-focused)
+    # ============================================================
+
+    # Scale fluxes to physical units (for metrics and interpretation)
+    F_CO2_ref_scaled = F_CO2_ref * mol_density_ref * 1e6 if np.isfinite(mol_density_ref) else np.nan  # umol m-2 s-1
+    F_LE_ref_scaled = F_LE_ref * mol_density_ref * LV_PER_MOL if np.isfinite(mol_density_ref) else np.nan  # W m-2
+    F_H_ref_scaled = F_H_ref * mass_density_ref * CP_DRY if np.isfinite(mass_density_ref) else np.nan  # W m-2
+
+    F_CO2_raw_scaled = F_CO2_raw * mol_density_deg * 1e6 if np.isfinite(mol_density_deg) else np.nan
+    F_LE_raw_scaled = F_LE_raw * mol_density_deg * LV_PER_MOL if np.isfinite(mol_density_deg) else np.nan
+    F_H_raw_scaled = F_H_raw * mass_density_deg * CP_DRY if np.isfinite(mass_density_deg) else np.nan
+
+    outputs = []
+    for rotation_mode in rotation_modes:
+        if rotation_mode == "double":
+            u_deg_rot, v_deg_rot, w_deg_for_flux, alpha_deg, beta_deg = double_rotate(u_d, v_d, w_d)
+        else:
+            w_deg_for_flux = w_d
+            alpha_deg = beta_deg = 0.0
+
+        _log_empty(w_deg_for_flux, "w_deg_for_flux", "w_mean_deg", path, theta_index, rotation_mode)
+        w_mean_deg = float(np.nanmean(w_deg_for_flux))
+
+        if rotation_mode == "double":
+            F_CO2_deg, F_LE_deg, F_H_deg = compute_fluxes(
+                w_deg_for_flux, Ts_d, mr_CO2_deg, mr_H2O_deg
+            )
+        else:
+            correction_factor = 0.7
+            F_CO2_corr = F_CO2_raw + w_mean_deg * correction_factor * F_CO2_raw
+            F_LE_corr  = F_LE_raw  + w_mean_deg * correction_factor * F_LE_raw
+            F_CO2_deg, F_LE_deg, F_H_deg = F_CO2_corr, F_LE_corr, F_H_raw
+
+        F_CO2_deg_scaled = F_CO2_deg * mol_density_deg * 1e6 if np.isfinite(mol_density_deg) else np.nan
+        F_LE_deg_scaled = F_LE_deg * mol_density_deg * LV_PER_MOL if np.isfinite(mol_density_deg) else np.nan
+        F_H_deg_scaled = F_H_deg * mass_density_deg * CP_DRY if np.isfinite(mass_density_deg) else np.nan
+
+        # Residuals (degraded - reference)
+        res_CO2 = F_CO2_deg_scaled - F_CO2_ref_scaled
+        res_LE  = F_LE_deg_scaled  - F_LE_ref_scaled
+        res_H   = F_H_deg_scaled   - F_H_ref_scaled
+
+        out = {
+            "site_id": site_id,
+            "theta_index": theta_index,
+            "rotation_mode": rotation_mode,
+            "is_day": is_daytime(window_start, ecosystem, site_id),
+
+            "window_start": window_start,
+
+            # Fluxes (scaled)
+            "F_CO2_ref": F_CO2_ref_scaled,
+            "F_CO2_deg": F_CO2_deg_scaled,
+            "F_CO2_raw": F_CO2_raw_scaled,
+
+            "F_LE_ref": F_LE_ref_scaled,
+            "F_LE_deg": F_LE_deg_scaled,
+            "F_LE_raw": F_LE_raw_scaled,
+
+            "F_H_ref": F_H_ref_scaled,
+            "F_H_deg": F_H_deg_scaled,
+            "F_H_raw": F_H_raw_scaled,
+
+            # Residuals
+            "res_CO2": res_CO2,
+            "res_LE": res_LE,
+            "res_H": res_H,
+
+            "w_mean_deg": w_mean_deg,
+            "effective_fs": f_eff,
+            "lag_samples_effective": lag_samples_eff,
+        }
+
+        if subsample_spec is not None:
+            out["subsample_mode"] = subsample_spec.mode.value
+            out["subsample_label"] = subsample_spec.label()
+            out["subsample_index"] = subsample_index
+            out.update(subsample_meta)
+
+        outputs.append(out)
+
+    return outputs
+
+
+# =============================================================
 # Wrapper called from site_runner
 # =============================================================
 
@@ -812,5 +1157,31 @@ def process_single_window(path, arrays, theta, site_id, theta_index, rotation_mo
         ecosystem=ecosystem,
         subsample_spec=subsample_spec,
         subsample_index=subsample_index,
+        path=str(path),
+    )
+
+
+def process_single_window_multi(path, arrays, theta, site_id, theta_index, rotation_modes, lag_samples, ecosystem,
+                                subsample_spec: SubsampleSpec | None = None,
+                                subsample_index: int | None = None,
+                                reference=None):
+    """
+    Wrapper that extracts the window timestamp from the file name,
+    then calls the multi-rotation physics engine.
+    """
+    window_start = extract_window_timestamp_from_filename(Path(path))
+
+    return process_window_for_theta_multi(
+        arrays=arrays,
+        theta=theta,
+        site_id=site_id,
+        theta_index=theta_index,
+        rotation_modes=rotation_modes,
+        lag_samples=lag_samples,
+        window_start=window_start,
+        ecosystem=ecosystem,
+        subsample_spec=subsample_spec,
+        subsample_index=subsample_index,
+        reference=reference,
         path=str(path),
     )

@@ -37,19 +37,19 @@ SELECT_COLUMNS = [
 
 SANITY_LIMITS = {
     # Wind (m/s)
-    "U": (-15.0, 15.0),
-    "V": (-15.0, 15.0),
-    "W": (-3.0, 3.0),
+    "U": (-20.0, 20.0),
+    "V": (-20.0, 20.0),
+    "W": (-5.0, 5.0),
     # Sonic temperature is stored in Kelvin in the cached NPZ files
     "T_SONIC": (250.0, 320.0),  # K
     # Cell temperature is in degC
-    "T_CELL": (-10.0, 40.0),
+    "T_CELL": (-20.0, 40.0),
     # Gas densities: CO2 ~12–40 mmol/m3 for 300–1000 ppm at typical air density
     "CO2_CONC": (7.0, 30.0),    # mmol/m3
     # Water vapor density: generous envelope (typical < 1000 mmol/m3)
     "H2O_CONC": (0.0, 1000.0),  # mmol/m3
     # Cell pressure (kPa)
-    "PRESS_CELL": (90.0, 105.0),
+    "PRESS_CELL": (75.0, 105.0),
 }
 
 SANITY_LIMITS_ARRAY = {
@@ -62,6 +62,22 @@ SANITY_LIMITS_ARRAY = {
     "rho_H2O": SANITY_LIMITS["H2O_CONC"],  # mmol/m3
     "P_cell": SANITY_LIMITS["PRESS_CELL"], # kPa
 }
+
+
+
+def _normalize_pressure_kpa(values):
+    # Normalize pressure to kPa when input looks like Pa or hPa.
+    arr = np.asarray(values, dtype=float)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return arr
+    median = float(np.median(finite))
+    if median > 2000.0:
+        return arr / 1000.0
+    if median > 200.0:
+        return arr / 10.0
+    return arr
+
 
 IDEAL_GAS_CONSTANT = 8.314462618  # J/(mol K)
 
@@ -147,6 +163,8 @@ def read_raw_file(file_path: Path) -> pd.DataFrame:
     df = df[cols]
 
     # Apply simple physical sanity filters; values outside are set to NaN.
+    if "PRESS_CELL" in df.columns:
+        df["PRESS_CELL"] = _normalize_pressure_kpa(df["PRESS_CELL"].to_numpy())
     for col, (lo, hi) in SANITY_LIMITS.items():
         if col not in df.columns:
             continue
@@ -168,6 +186,8 @@ def _sanitize_arrays(arrays: dict) -> dict:
             continue
         lo, hi = SANITY_LIMITS_ARRAY[key]
         a = np.asarray(arr, dtype=float)
+        if key == "P_cell":
+            a = _normalize_pressure_kpa(a)
         mask = np.isfinite(a) & (a >= lo) & (a <= hi)
         if not mask.all():
             a = a.copy()

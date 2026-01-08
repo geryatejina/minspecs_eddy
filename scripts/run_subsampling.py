@@ -44,6 +44,16 @@ if __name__ == "__main__":
         "--empty-log",
         help="Log empty/NaN arrays: 'stderr', 'stdout', or a file path.",
     )
+    parser.add_argument(
+        "--results-dir",
+        default="subsampling_results",
+        help="Write results into this directory.",
+    )
+    parser.add_argument(
+        "--window-logs",
+        action="store_true",
+        help="Write per-window logs into the results directory.",
+    )
     args = parser.parse_args()
     if args.empty_log:
         os.environ["MINSPECS_EMPTY_LOG"] = args.empty_log
@@ -68,8 +78,9 @@ if __name__ == "__main__":
 
     subsample_specs = build_subsample_specs()
 
-    results_dir = Path("subsampling_results")
+    results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
+    window_log_dir = results_dir if args.window_logs else None
 
     results = run_subsampling_experiment(
         ecosystem_site_list=sites,
@@ -82,7 +93,7 @@ if __name__ == "__main__":
         skip_map=None,    
         outlier_lower_pct=7.0,
         outlier_upper_pct=93.0,
-        window_log_dir=results_dir,
+        window_log_dir=window_log_dir,
     )
 
     write_results_to_csv(results, results_dir / "subsampling_5sites_full_period.csv")
