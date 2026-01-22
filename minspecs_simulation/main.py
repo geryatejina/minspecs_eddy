@@ -50,6 +50,8 @@ def run_experiment(
     theta_seed: int | None = None,
     skip_map: dict | None = None,
     window_log_dir: Path | None = None,
+    checkpoint_dir: Path | None = None,
+    checkpoint_prefix: str = "site_results",
 ):    
     """
     Run the entire experiment across all sites.
@@ -82,6 +84,10 @@ def run_experiment(
         optional mapping {(ecosystem, site): set(theta_index)} to skip already processed combos
     window_log_dir : Path or None
         if provided, write per-window logs into this directory
+    checkpoint_dir : Path or None
+        if provided, write per-site CSV checkpoints into this directory
+    checkpoint_prefix : str
+        filename prefix for per-site checkpoints
 
     Returns
     -------
@@ -222,6 +228,12 @@ def run_subsampling_experiment(
                 metrics["sweep_value"] = value
 
         experiment_results[(ecosystem, site)] = site_results
+        if checkpoint_dir is not None:
+            from .writer import write_results_to_csv
+            checkpoint_dir = Path(checkpoint_dir)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_path = checkpoint_dir / f"{checkpoint_prefix}_{ecosystem}_{site}.csv"
+            write_results_to_csv({(ecosystem, site): site_results}, checkpoint_path)
         print(f"[main] Completed site: {ecosystem}/{site}")
 
     print("\n[main] All subsampling runs processed.")

@@ -57,10 +57,36 @@ Power/precision trade-off simulations for eddy-covariance systems. Three experim
   ```
 - Output: `results_ch4_sweep.csv`
 
+### Serial batch runner (CO2/H2O)
+- Entry: `scripts/run_co2_batch_serial.py`
+- Runs multiple Monte Carlo replicas serially with per-run outputs and optional collation.
+- Example:
+  ```bash
+  python -m scripts.run_co2_batch_serial --data-root D:\data\ec\raw\ICOS_npz --n-runs 6 --n-theta 50
+  ```
+
 ## Result structure
 - CSV rows are per-site per-configuration.
 - Metadata columns include ecosystem/site, theta/subsample identifiers, and rotation mode.
 - Metrics include regression slope/intercept/R2 on 30-min windows and daily means, plus cumulative bias (monthly mean and full-period totals). Gaps are harmonized by requiring paired finite ref/deg values.
+
+## Metrics & aggregation (summary)
+- Fluxes evaluated for CO2/H2O: F_CO2 (umol m-2 s-1), F_LE (W m-2), F_H (W m-2).
+- Aggregated metrics: regression slope/intercept/R2 on 30-min window pairs and on daily means.
+- Cumulative bias: full-period totals and mean monthly bias, with relative bias.
+- Outlier filtering is applied to residuals per flux (default 5th-95th percentiles; configurable).
+- Methane (CH4): window-level F_CH4_ref/deg are computed and aggregated with the same regression/bias logic.
+
+## Reproducible runs & collation
+- For independent Monte Carlo replicas, keep configuration identical and vary `theta_seed` in the script.
+- Run serially (one after the other) and write results to separate files or directories.
+- Collate results afterward (e.g., concatenate CSVs and add a run_id).
+- See `docs/experiments.md` for detailed metrics and multi-run workflow.
+
+## Checkpoints (per-site)
+- Long runs can write per-site CSV checkpoints so completed sites are not lost.
+- The batch runner supports this by default (see `scripts/run_co2_batch_serial.py`).
+- Checkpoints are written under each run directory in `checkpoints/` and can be disabled with `--no-checkpoints`.
 
 ## Key modules
 - `minspecs_simulation/main.py`: orchestrators (`run_experiment`, `run_subsampling_experiment`).

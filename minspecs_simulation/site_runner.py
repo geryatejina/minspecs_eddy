@@ -16,10 +16,12 @@ For each theta:
 
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
+import os
+import time
 import pandas as pd
 import numpy as np
 
@@ -35,6 +37,47 @@ from .timelag import get_site_lag_samples
 from .types import SubsampleSpec, Theta
 
 
+IO_RETRY_COUNT = int(os.getenv("MINSPECS_IO_RETRIES", "3"))
+IO_RETRY_BACKOFF_SEC = float(os.getenv("MINSPECS_IO_RETRY_BACKOFF", "0.5"))
+STALL_TIMEOUT_SEC = float(os.getenv("MINSPECS_STALL_TIMEOUT_SEC", "0"))
+MAX_POOL_RESTARTS = int(os.getenv("MINSPECS_MAX_POOL_RESTARTS", "2"))
+
+
+def _progress_bar(done: int, total: int, width: int = 30) -> str:
+    if total <= 0:
+        return "[?] 0/0"
+    frac = min(max(done / total, 0.0), 1.0)
+    filled = int(round(width * frac))
+    bar = "#" * filled + "-" * (width - filled)
+    pct = int(round(frac * 100))
+    return f"[{bar}] {done}/{total} ({pct}%)"
+
+
+def _load_window_arrays_with_retry(path: Path, ecosystem: str, site_id: str):
+    """
+    Retry transient IO errors when loading window arrays.
+    Returns arrays dict on success, or None on failure.
+    """
+    retries = max(IO_RETRY_COUNT, 0)
+    backoff = max(IO_RETRY_BACKOFF_SEC, 0.0)
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            return load_window_arrays(path)
+        except (PermissionError, OSError) as exc:
+            last_exc = exc
+            if attempt >= retries:
+                break
+            sleep_sec = backoff * (2 ** attempt)
+            if sleep_sec > 0:
+                time.sleep(sleep_sec)
+    print(
+        f"[site_runner] {ecosystem}/{site_id}: skipping unreadable file {path} "
+        f"(after {retries + 1} attempts: {last_exc})"
+    )
+    return None
+
+
 def _process_file_all(
     path: Path,
     theta_list,
@@ -48,7 +91,9 @@ def _process_file_all(
     Worker helper: read one raw file, then compute window results for all
     thetas. Returns a list of window_result dicts.
     """
-    arrays = load_window_arrays(path)
+    arrays = _load_window_arrays_with_retry(path, ecosystem, site_id)
+    if arrays is None:
+        return []
     reference = compute_reference_metrics(arrays, lag_samples)
 
     results = []
@@ -221,27 +266,69 @@ def run_site(
         print(f"[site_runner] {site_id}: using hard-coded nominal lag {lag_samples} samples")
 
     # Parallel over files; each worker reads once and fans out over all combos
-    with ProcessPoolExecutor(max_workers=max_workers) as ex:
-        futures = {
-            ex.submit(_process_file_all, path, theta_list, rotation_modes, site_id, ecosystem, lag_samples, subsample_specs): path
-            for path in file_paths
-        }
-        processed = 0
-        report_every = max(1, total_files // 10) if total_files else 1
-        try:
-            for f in as_completed(futures):
-                for result in f.result():
-                    key = (result["theta_index"], result["rotation_mode"])
-                    window_results_by_combo[key].append(result)
-                processed += 1
-                if processed % report_every == 0 or processed == total_files:
-                    pct = (processed / total_files * 100) if total_files else 100.0
-                    print(f"[site_runner] {ecosystem}/{site_id}: {processed}/{total_files} windows ({pct:.0f}%) done")
-        except KeyboardInterrupt:
-            for fut in futures:
-                fut.cancel()
-            ex.shutdown(wait=False, cancel_futures=True)
-            raise
+    processed = 0
+    report_every = max(1, total_files // 20) if total_files else 1
+    remaining_paths = list(file_paths)
+    restarts = 0
+
+    while remaining_paths:
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futures = {
+                ex.submit(_process_file_all, path, theta_list, rotation_modes, site_id, ecosystem, lag_samples, subsample_specs): path
+                for path in remaining_paths
+            }
+            pending = set(futures.keys())
+            remaining_paths = []
+            try:
+                while pending:
+                    timeout = STALL_TIMEOUT_SEC if STALL_TIMEOUT_SEC > 0 else None
+                    done, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
+                    if not done:
+                        restarts += 1
+                        print(
+                            f"\n[site_runner] {ecosystem}/{site_id}: "
+                            f"stall detected (no completions for {STALL_TIMEOUT_SEC}s); "
+                            f"restarting pool ({restarts}/{MAX_POOL_RESTARTS})"
+                        )
+                        remaining_paths = [futures[f] for f in pending]
+                        for fut in pending:
+                            fut.cancel()
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        break
+
+                    for f in done:
+                        path = futures[f]
+                        try:
+                            results = f.result()
+                        except Exception as exc:
+                            print(f"[site_runner] {ecosystem}/{site_id}: worker failed for {path} ({exc})")
+                            results = []
+                        for result in results:
+                            key = (result["theta_index"], result["rotation_mode"])
+                            window_results_by_combo[key].append(result)
+                        processed += 1
+                        if processed % report_every == 0 or processed == total_files:
+                            bar = _progress_bar(processed, total_files)
+                            print(f"\r[site_runner] {ecosystem}/{site_id}: {bar}", end="", flush=True)
+                            if processed == total_files:
+                                print()
+            except KeyboardInterrupt:
+                for fut in futures:
+                    fut.cancel()
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise
+
+        if remaining_paths:
+            if restarts > MAX_POOL_RESTARTS:
+                print(
+                    f"\n[site_runner] {ecosystem}/{site_id}: max pool restarts exceeded; "
+                    f"skipping {len(remaining_paths)} remaining window(s)"
+                )
+                processed += len(remaining_paths)
+                remaining_paths = []
+                bar = _progress_bar(processed, total_files)
+                print(f"\r[site_runner] {ecosystem}/{site_id}: {bar}", end="", flush=True)
+                print()
 
     # Optional: log per-window metrics. For subsampling, write a wide format:
     # window_start, is_day, ogive_stop_time_sec, then F_{flux}_ref and F_{flux}_{label} per subsample label.
