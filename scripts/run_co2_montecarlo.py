@@ -7,11 +7,21 @@ from minspecs_simulation.writer import write_results_to_csv
 from minspecs_simulation.window_processor import set_empty_log
 
 
+def parse_rotation_modes(value):
+    modes = [m.strip() for m in value.split(",")]
+    return [m for m in modes if m]
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CO2/H2O Monte Carlo experiment.")
     parser.add_argument(
         "--empty-log",
         help="Log empty/NaN arrays: 'stderr', 'stdout', or a file path.",
+    )
+    parser.add_argument(
+        "--rotation-modes",
+        default="double,none",
+        help="Comma-separated rotation modes to evaluate.",
     )
     args = parser.parse_args()
     if args.empty_log:
@@ -43,7 +53,7 @@ if __name__ == "__main__":
         ecosystem_site_list=sites,
         theta_ranges=theta_ranges,
         N_theta=10,
-        rotation_modes=("double", "none"),
+        rotation_modes=parse_rotation_modes(args.rotation_modes),
         data_root=Path(r"D:\data\ec\raw\ICOS_npz"),
         file_pattern="*.npz",
         max_workers=8,

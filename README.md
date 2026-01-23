@@ -100,4 +100,5 @@ Power/precision trade-off simulations for eddy-covariance systems. Three experim
 ## Notes
 - Subsampling is applied before any degradation to mimic scheduled acquisition; default theta for that path is ideal (no noise/lag).
 - Rotation modes default to `double` and `none` for CO2/H2O; methane path is independent.
+- CO2/H2O run scripts accept `--rotation-modes` (comma-separated) to control which rotation modes execute.
 - For quick tests, use `max_files_per_site`/`max_files` in the scripts to limit windows.

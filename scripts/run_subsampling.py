@@ -8,6 +8,11 @@ from minspecs_simulation.writer import write_results_to_csv
 from minspecs_simulation.window_processor import set_empty_log
 
 
+def parse_rotation_modes(value):
+    modes = [m.strip() for m in value.split(",")]
+    return [m for m in modes if m]
+
+
 def build_subsample_specs():
     return [
         SubsampleSpec(mode=SubsampleMode.DECIMATE, decimate_factor=2, name="decimate_2"),
@@ -54,6 +59,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Write per-window logs into the results directory.",
     )
+    parser.add_argument(
+        "--rotation-modes",
+        default="double",
+        help="Comma-separated rotation modes to evaluate.",
+    )
     args = parser.parse_args()
     if args.empty_log:
         os.environ["MINSPECS_EMPTY_LOG"] = args.empty_log
@@ -85,7 +95,7 @@ if __name__ == "__main__":
     results = run_subsampling_experiment(
         ecosystem_site_list=sites,
         subsample_specs=subsample_specs,
-        rotation_modes=("double",),
+        rotation_modes=parse_rotation_modes(args.rotation_modes),
         data_root=Path(r"D:\data\ec\raw\ICOS_npz"),
         file_pattern="*.npz",
         max_workers=8,

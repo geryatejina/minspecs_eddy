@@ -144,7 +144,7 @@ if __name__ == "__main__":
             data_root=Path(args.data_root),
             file_pattern=args.file_pattern,
             max_workers=args.max_workers,
-            max_files_per_site=48,
+            max_files_per_site=336,
             theta_seed=seed,
             skip_map=None,
             window_log_dir=window_log_dir,
